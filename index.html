@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CRM</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============================ SETUP ============================ -->
+<div class="gate" id="gateSetup">
+  <div class="gatecard">
+    <div class="gm">
+      <div class="mark">C</div>
+      <div><div class="t">Connect the backend</div><div class="s">One-time, per device</div></div>
+    </div>
+    <div class="field">
+      <label for="setupUrl">Apps Script web app URL</label>
+      <input id="setupUrl" type="url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off">
+      <div class="hint">Deploy the script as a Web app (Execute as: Me, Access: Anyone) and paste the /exec URL. It is stored on this device only.</div>
+    </div>
+    <div class="gateerr" id="setupErr"></div>
+    <button class="btn pri" id="btnConnect" style="width:100%">Connect</button>
+  </div>
+</div>
+
+<!-- ============================ LOGIN ============================ -->
+<div class="gate" id="gateLogin">
+  <div class="gatecard">
+    <div class="gm">
+      <div class="mark">C</div>
+      <div><div class="t">Sign in</div><div class="s">CRM workspace</div></div>
+    </div>
+    <form id="loginForm">
+      <div class="field">
+        <label for="loginId">User ID</label>
+        <input id="loginId" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false">
+      </div>
+      <div class="field">
+        <label for="loginPw">Password</label>
+        <input id="loginPw" name="password" type="password" autocomplete="current-password">
+      </div>
+      <div class="gateerr" id="loginErr"></div>
+      <button class="btn pri" id="btnLogin" type="submit" style="width:100%">Sign in</button>
+    </form>
+    <div class="gatefoot">
+      <span id="loginHost">—</span>
+      <button id="btnRewire">Change backend</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ APP ============================ -->
+<div class="shell" id="shell">
+
+  <!-- rail -->
+  <aside class="rail" id="rail">
+    <div class="brand">
+      <div class="mark">C</div>
+      <div><div class="nm">CRM</div><div class="sub" id="brandSub">workspace</div></div>
+    </div>
+
+    <div class="scopebox">
+      <button class="scopebtn" id="scopeBtn">
+        <span style="flex:1;min-width:0">
+          <span class="lbl">Scope</span><br>
+          <span class="val" id="scopeVal">All tags</span>
+        </span>
+        <span class="car">&#9662;</span>
+      </button>
+    </div>
+
+    <nav class="navgroups" id="navGroups"></nav>
+
+    <div class="railfoot">
+      <div class="avatar" id="meAv">?</div>
+      <div style="flex:1;min-width:0">
+        <div class="nm" id="meName">—</div>
+        <div class="rl" id="meRole">—</div>
+      </div>
+      <button class="iconbtn" id="btnSettings" title="Settings">&#9881;</button>
+      <button class="iconbtn" id="btnOut" title="Sign out">&#10162;</button>
+    </div>
+  </aside>
+
+  <!-- main -->
+  <div class="main">
+    <div class="topbar">
+      <button class="iconbtn railtoggle" id="btnRail" title="Menu">&#9776;</button>
+      <div class="crumbs" id="crumbs"></div>
+      <div class="spacer"></div>
+      <div class="gsearch"><input class="inp" id="gq" type="search" placeholder="Search this view"></div>
+      <button class="iconbtn" id="btnReload" title="Reload from the sheet">&#8635;</button>
+      <button class="btn pri sm" id="btnNew">+ New</button>
+    </div>
+
+    <div class="viewbar" id="viewBar"></div>
+
+    <div class="content" id="content">
+      <section class="view" id="v-dash"><div class="dash" id="dashGrid"></div></section>
+      <section class="view" id="v-tasks">
+        <div class="gridwrap" id="taskGridWrap"><table class="grid" id="gTasks"></table></div>
+        <div class="board" id="taskBoard" style="display:none"></div>
+      </section>
+      <section class="view" id="v-flows">
+        <div class="flowsplit">
+          <div class="flowlist" id="flowList"></div>
+          <div class="canvas" id="flowCanvas"></div>
+        </div>
+      </section>
+      <section class="view" id="v-deals">
+        <div class="gridwrap" id="dealGridWrap"><table class="grid" id="gDeals"></table></div>
+        <div class="board" id="dealBoard" style="display:none"></div>
+      </section>
+      <section class="view" id="v-contacts"><div class="gridwrap"><table class="grid" id="gContacts"></table></div></section>
+      <section class="view" id="v-companies"><div class="gridwrap"><table class="grid" id="gCompanies"></table></div></section>
+      <section class="view" id="v-time">
+        <div class="dash" id="timeSummary" style="padding-bottom:0"></div>
+        <div class="gridwrap"><table class="grid" id="gTime"></table></div>
+      </section>
+      <section class="view" id="v-admin">
+        <div class="dash" style="grid-template-columns:1fr">
+          <div class="panel">
+            <div class="phead"><h3>People</h3><span class="spacer"></span><button class="btn sm" id="btnNewUser">+ User</button></div>
+            <div class="gridwrap"><table class="grid" id="gUsers"></table></div>
+          </div>
+          <div class="panel">
+            <div class="phead"><h3>Badges</h3><span class="m">the roles a task gets handed between</span><span class="spacer"></span><button class="btn sm" id="btnNewBadge">+ Badge</button></div>
+            <div class="gridwrap"><table class="grid" id="gBadges"></table></div>
+          </div>
+          <div class="panel">
+            <div class="phead"><h3>Tags</h3><span class="m">tags decide what each person can see</span><span class="spacer"></span><button class="btn sm" id="btnNewTag">+ Tag</button></div>
+            <div class="gridwrap"><table class="grid" id="gTags"></table></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- status bar -->
+  <div class="statusbar">
+    <span class="seg-dot" id="syncDot"></span>
+    <span id="syncText">Ready</span>
+    <span id="statusCount"></span>
+    <span class="spacer"></span>
+    <div class="runbox" id="runBox">
+      <span class="pulse"></span>
+      <span class="rt" id="runTask">—</span>
+      <span class="rc" id="runClock">0:00:00</span>
+      <button class="btn xs" id="btnRunOpen">Open</button>
+      <button class="btn xs" id="btnRunStop">Stop</button>
+    </div>
+  </div>
+</div>
+
+<!-- drawer -->
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer">
+  <div class="dhead" style="position:relative">
+    <button class="iconbtn dclose" id="btnDrawerClose">&times;</button>
+    <div class="dcrumbs" id="drawerCrumbs"></div>
+    <h2 id="drawerTitle">—</h2>
+    <div class="dbadges" id="drawerBadges"></div>
+  </div>
+  <div class="dbody" id="drawerBody"></div>
+  <div class="dfoot" id="drawerFoot"></div>
+</aside>
+
+<!-- modal -->
+<div class="modal" id="modal">
+  <div class="mhead" id="modalTitle">—</div>
+  <div class="mbody" id="modalBody"></div>
+  <div class="merr" id="modalErr"></div>
+  <div class="mfoot">
+    <button class="btn danger" id="btnModalDelete" style="display:none">Delete</button>
+    <span class="spacer"></span>
+    <button class="btn" id="btnModalCancel">Cancel</button>
+    <button class="btn pri" id="btnModalSave">Save</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="api.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

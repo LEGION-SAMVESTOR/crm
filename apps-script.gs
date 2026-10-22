@@ -11,10 +11,12 @@
  * Copy the /exec URL and paste it into the CRM's setup screen once per device.
  *
  * Tabs this script owns (all created for you by the setup menu item):
- *    Users      — who can sign in, the tags they hold, and the badges they wear
- *    Sessions   — issued login tokens (housekeeping, safe to clear any time)
- *    Tags       — the tag catalogue: label + colour per tag
- *    Badges     — the role catalogue: CSM, CRO Manager, CRO SD, …
+ *    Users       — who can sign in, and the postings each person holds
+ *    Sessions    — issued login tokens (housekeeping, safe to clear any time)
+ *    Departments — CSM, DM, Ops, CRO
+ *    Teams       — CS, GD, SD, each belonging to a department
+ *    Positions   — Manager, TL, Next Inline, Member, with rank and access
+ *    Tags        — client labels only: BM, RW, AUJ
  *    Lists      — pipeline stages, statuses, priorities
  *    Companies  — accounts
  *    Contacts   — people, each optionally attached to a company
@@ -39,12 +41,35 @@
  *     anyone on its watchers list,
  *     whoever it is assigned to now,
  *     and anyone who has held it at some point (its participants),
- *   plus admins. Tags on a task only decide which flow and which badges apply.
+ *   plus admins. A task's department only decides which desks it can go to.
  *
- * BADGES are roles: CSM, DM, Ops, CRO Manager, CRO CS, CRO GD, CRO SD TL,
- *   CRO SD. A person wears one or more. A flow step is addressed to a badge,
- *   so forwarding a task means handing it to someone wearing that badge — the
- *   task lands in their lap and becomes visible to them.
+ * THE ORG CHART IS THE ACCESS MODEL. Three catalogues:
+ *     Departments   CSM, DM, Ops, CRO
+ *     Teams         belong to a department — CRO has CS, GD and SD
+ *     Positions     Manager, TL, Next Inline, Member — each with a rank and
+ *                   a default of read or write
+ *
+ *   A person holds POSTINGS, written dept.team.position:
+ *       cro.sd.tl         TL of the SD team inside CRO
+ *       cro.manager       department-wide: every team under CRO
+ *       cro.gd.member:r   an exception — read only, whatever the position says
+ *
+ *   A record carries a department and optionally a team. Someone reaches it
+ *   when one of their postings covers that department, and either the posting
+ *   is department-wide or its team matches. A record with no department is
+ *   private to its owner and to admins.
+ *
+ *   NEXT INLINE stands in for the TL: the position's `acts` rank is TL's, so
+ *   they can do everything a TL can. Anything they do that needed TL rank is
+ *   recorded as standing in and shown that way; ordinary member-level work is
+ *   not singled out.
+ *
+ * TAGS are only client labels now — BM, RW, AUJ. They say which client a
+ *   record belongs to and grant nobody anything.
+ *
+ * A flow step is addressed to postings ("cro.sd.tl"), so forwarding hands the
+ *   task to someone holding a matching one — it lands in their lap and becomes
+ *   visible to them.
  */
 
 /* ========================================================================
@@ -53,35 +78,69 @@
 /* Bump this when HEAD changes and the next request will migrate the sheet by
    itself — new tabs created, new columns appended, nothing already there
    moved. Nobody has to run anything. */
-var SCHEMA_VERSION = "2026-10-22.1";
+var SCHEMA_VERSION = "2026-10-23.1";
 
 var SESSION_DAYS = 30;     // how long a login lasts
 var TIME_DAYS    = 180;    // how much of the time log the app pulls down
 
 var HEAD = {
-  Users:     ["userId", "name", "email", "role", "tags", "badges", "password", "passwordHash", "active"],
-  Sessions:  ["token", "userId", "createdAt", "expiresAt"],
-  Tags:      ["tag", "label", "colour", "order"],
-  Badges:    ["badge", "label", "colour", "order"],
-  Lists:     ["type", "value", "label", "colour", "order"],
-  Companies: ["id", "name", "owner", "tags", "website", "phone", "city", "notes", "createdAt", "updatedAt"],
-  Contacts:  ["id", "name", "companyId", "title", "email", "phone", "owner", "tags", "status", "notes", "createdAt", "updatedAt"],
-  Deals:     ["id", "title", "companyId", "contactId", "value", "stage", "owner", "tags", "closeDate", "notes", "createdAt", "updatedAt"],
-  Tasks:     ["id", "title", "notes", "linkType", "linkId", "assignee", "owner", "tags", "status", "priority", "dueDate", "flowId", "stage", "watchers", "participants", "createdAt", "updatedAt"],
-  Flows:     ["id", "name", "tags", "description", "stages", "active", "owner", "createdAt", "updatedAt"],
-  FlowLog:   ["id", "taskId", "flowId", "stage", "assignee", "enteredAt", "exitedAt", "minutes", "byUser", "note"],
-  TimeLog:   ["id", "taskId", "userId", "date", "start", "end", "minutes", "note", "createdAt"],
-  Activity:  ["at", "userId", "entity", "entityId", "action", "detail"]
+  Users:       ["userId", "name", "email", "role", "postings", "tags", "badges", "password", "passwordHash", "active"],
+  Sessions:    ["token", "userId", "createdAt", "expiresAt"],
+  Departments: ["dept", "label", "colour", "order"],
+  Teams:       ["team", "label", "dept", "colour", "order"],
+  Positions:   ["position", "label", "rank", "acts", "access", "colour", "order"],
+  Tags:        ["tag", "label", "colour", "order"],
+  Lists:       ["type", "value", "label", "colour", "order"],
+  Companies:   ["id", "name", "owner", "dept", "team", "tags", "website", "phone", "city", "notes", "createdAt", "updatedAt"],
+  Contacts:    ["id", "name", "companyId", "title", "email", "phone", "owner", "dept", "team", "tags", "status", "notes", "createdAt", "updatedAt"],
+  Deals:       ["id", "title", "companyId", "contactId", "value", "stage", "owner", "dept", "team", "tags", "closeDate", "notes", "createdAt", "updatedAt"],
+  Tasks:       ["id", "title", "notes", "linkType", "linkId", "assignee", "owner", "dept", "team", "tags", "status", "priority", "dueDate", "flowId", "stage", "watchers", "participants", "createdAt", "updatedAt"],
+  Flows:       ["id", "name", "dept", "team", "tags", "description", "stages", "active", "owner", "createdAt", "updatedAt"],
+  FlowLog:     ["id", "taskId", "flowId", "stage", "assignee", "enteredAt", "exitedAt", "minutes", "byUser", "actingAs", "note"],
+  TimeLog:     ["id", "taskId", "userId", "date", "start", "end", "minutes", "note", "createdAt"],
+  Activity:    ["at", "userId", "actingAs", "entity", "entityId", "action", "detail"]
 };
 
 // the entities the generic save/remove endpoints will accept
 var ENTITIES = ["Companies", "Contacts", "Deals", "Tasks", "Flows"];
 
+// Tags are client labels now, nothing more.
 var DEFAULT_TAGS = [
-  ["internal", "Internal", "#5ea8ff", 0],
-  ["sales",    "Sales",    "#3ddc84", 1],
-  ["support",  "Support",  "#ffc24b", 2]
+  ["bm",       "BM",       "#fbbf24", 0],
+  ["rw",       "RW",       "#34d399", 1],
+  ["auj",      "AUJ",      "#f87171", 2],
+  ["internal", "Internal", "#60a5fa", 3]
 ];
+
+/* ---- the org chart, which is the access model ---- */
+var DEFAULT_DEPARTMENTS = [
+  ["csm", "CSM", "#60a5fa", 0],
+  ["dm",  "DM",  "#a78bfa", 1],
+  ["ops", "Ops", "#f472b6", 2],
+  ["cro", "CRO", "#2dd4bf", 3]
+];
+
+var DEFAULT_TEAMS = [
+  ["cs", "CS", "cro", "#fbbf24", 0],
+  ["gd", "GD", "cro", "#f87171", 1],
+  ["sd", "SD", "cro", "#34d399", 2]
+];
+
+/* rank  — standing in the org: Member 10, Next Inline 15, TL 20, Manager 30
+   acts  — the rank they may exercise. Next Inline acts at TL rank, so they can
+           do everything a TL can; anything they do that needed TL rank is
+           marked as standing in.
+   access— what the position grants by default, before any per-person exception */
+var DEFAULT_POSITIONS = [
+  ["manager",     "Manager",     30, 30, "write", "#2dd4bf", 0],
+  ["tl",          "TL",          20, 20, "write", "#60a5fa", 1],
+  ["next-inline", "Next Inline", 15, 20, "write", "#a78bfa", 2],
+  ["member",      "Member",      10, 10, "write", "#8b98a6", 3],
+  ["observer",    "Observer",    10, 10, "read",  "#94a3b8", 4]
+];
+
+// anything needing this rank or above is a TL-level act
+var TL_RANK = 20;
 
 var DEFAULT_LISTS = [
   ["stage", "Lead",        "#8b98a6", 0],
@@ -107,33 +166,24 @@ var DEFAULT_LISTS = [
   ["contactStatus", "Churned",  "#8b98a6", 3]
 ];
 
-// The roles a task gets handed between. Edit them in Admin once you are in.
-var DEFAULT_BADGES = [
-  ["csm",         "CSM",         "#60a5fa", 0],
-  ["dm",          "DM",          "#a78bfa", 1],
-  ["ops",         "Ops",         "#f472b6", 2],
-  ["cro-manager", "CRO Manager", "#2dd4bf", 3],
-  ["cro-cs",      "CRO CS",      "#fbbf24", 4],
-  ["cro-gd",      "CRO GD",      "#f87171", 5],
-  ["cro-sd-tl",   "CRO SD TL",   "#34d399", 6],
-  ["cro-sd",      "CRO SD",      "#8b98a6", 7]
-];
-
-// One worked routing map so the Flow builder is not an empty room on day one.
-// `badges` is who handles the step; `next` is where it may be forwarded from
-// there (empty = the following step); `entry` steps are where work comes in.
+/* One worked routing map so the Flow builder is not an empty room on day one.
+   `to` is the postings that staff the step; `next` is where it may be
+   forwarded from there (empty = the following step); `entry` is where work
+   comes in. A posting pattern with no team — "cro.manager" — matches anyone
+   holding that position anywhere in the department. */
 var DEFAULT_FLOW = {
   name: "CRO request",
-  tags: "internal",
+  dept: "cro",
+  team: "",
   description: "Where a CRO request goes, desk by desk.",
   stages: [
-    { key: "intake",   name: "Raised",     colour: "#60a5fa", badges: ["csm", "dm", "ops"], slaHours: 4,  entry: true,  next: ["triage"] },
-    { key: "triage",   name: "Triage",     colour: "#2dd4bf", badges: ["cro-manager"],      slaHours: 8,  next: ["copy", "design", "build"] },
-    { key: "copy",     name: "Copy",       colour: "#fbbf24", badges: ["cro-cs"],           slaHours: 24, next: ["design", "review"] },
-    { key: "design",   name: "Design",     colour: "#f87171", badges: ["cro-gd"],           slaHours: 48, next: ["build", "review"] },
-    { key: "build",    name: "Build",      colour: "#34d399", badges: ["cro-sd-tl", "cro-sd"], slaHours: 48, next: ["review"] },
-    { key: "review",   name: "Review",     colour: "#a78bfa", badges: ["cro-manager"],      slaHours: 12, approval: true, next: ["copy", "design", "build", "done"] },
-    { key: "done",     name: "Delivered",  colour: "#8b98a6", badges: [],                   slaHours: 0,  terminal: true }
+    { key: "intake", name: "Raised",    colour: "#60a5fa", to: ["csm.member", "dm.member", "ops.member"], slaHours: 4,  entry: true, next: ["triage"] },
+    { key: "triage", name: "Triage",    colour: "#2dd4bf", to: ["cro.manager"],                           slaHours: 8,  next: ["copy", "design", "build"] },
+    { key: "copy",   name: "Copy",      colour: "#fbbf24", to: ["cro.cs.tl", "cro.cs.member"],            slaHours: 24, next: ["design", "review"] },
+    { key: "design", name: "Design",    colour: "#f87171", to: ["cro.gd.tl", "cro.gd.member"],            slaHours: 48, next: ["build", "review"] },
+    { key: "build",  name: "Build",     colour: "#34d399", to: ["cro.sd.tl", "cro.sd.member"],            slaHours: 48, next: ["review"] },
+    { key: "review", name: "Review",    colour: "#a78bfa", to: ["cro.manager"], approval: true,           slaHours: 12, next: ["copy", "design", "build", "done"] },
+    { key: "done",   name: "Delivered", colour: "#8b98a6", to: [],                                        slaHours: 0,  terminal: true }
   ]
 };
 
@@ -183,7 +233,7 @@ function handle(body) {
       case "adminUsers":  return apiAdminUsers(body);
       case "adminSaveUser": return apiAdminSaveUser(body);
       case "adminSaveTag":  return apiAdminSaveTag(body);
-      case "adminSaveBadge": return apiAdminSaveBadge(body);
+      case "adminSaveOrg": return apiAdminSaveOrg(body);
       default:            return { ok: false, error: "Unknown action: " + action };
     }
   } catch (err) {
@@ -299,20 +349,108 @@ function isoDay(d) {
 /* ========================================================================
    TAGS & ACCESS
    ======================================================================== */
-// "aujjessa, razzai:r, *"  ->  {all:false, read:{...}, write:{...}}
-function parseGrants(cell) {
-  var grants = { all: false, read: {}, write: {} };
+/* ---- postings: "cro.sd.tl, cro.gd.member:r, *" ------------------------------
+   dept.team.position, or dept.position for the whole department. A trailing
+   :r or :w is a per-person exception that beats the position's own default.
+   "*" is everything, for an owner account. */
+function parsePostings(cell, positions) {
+  var out = { all: false, list: [] };
   str(cell).split(/[,;\n]/).forEach(function (part) {
-    var t = str(part).toLowerCase();
-    if (!t) return;
-    if (t === "*") { grants.all = true; return; }
-    var ro = /:r$/.test(t);
-    var tag = t.replace(/:r$/, "");
-    if (!tag) return;
-    grants.read[tag] = true;
-    if (!ro) grants.write[tag] = true;
+    var raw = str(part).toLowerCase();
+    if (!raw) return;
+    if (raw === "*") { out.all = true; return; }
+
+    var override = "";
+    var m = raw.match(/:(r|w|read|write)$/);
+    if (m) {
+      override = (m[1].charAt(0) === "r") ? "read" : "write";
+      raw = raw.replace(/:(r|w|read|write)$/, "");
+    }
+
+    var bits = raw.split(".").map(function (b) { return b.trim(); }).filter(Boolean);
+    if (bits.length < 2) return;                 // needs at least dept.position
+
+    var posting = {
+      dept: bits[0],
+      team: bits.length >= 3 ? bits[1] : "",
+      position: bits[bits.length - 1],
+      override: override
+    };
+    var p = positions && positions[posting.position];
+    posting.rank = p ? p.rank : 10;
+    posting.acts = p ? p.acts : posting.rank;
+    posting.access = override || (p ? p.access : "write");
+    posting.label = p ? p.label : posting.position;
+    out.list.push(posting);
   });
-  return grants;
+  return out;
+}
+
+// positions keyed for lookup, so parsing a posting can resolve its rank
+function positionIndex() {
+  var out = {};
+  readPositions().forEach(function (p) { out[p.position] = p; });
+  return out;
+}
+
+// the highest rank this person may exercise anywhere
+function topActs(user) {
+  if (user.role === "admin" || user.postings.all) return 999;
+  var top = 0;
+  user.postings.list.forEach(function (p) { if (p.acts > top) top = p.acts; });
+  return top;
+}
+// their real standing, before any standing-in
+function topRank(user) {
+  if (user.role === "admin" || user.postings.all) return 999;
+  var top = 0;
+  user.postings.list.forEach(function (p) { if (p.rank > top) top = p.rank; });
+  return top;
+}
+
+/* Did this person have to stand in to do something of the given rank?
+   True when their real standing is below it but the rank they may act at is
+   not — which is exactly the Next Inline case. */
+function standingIn(user, needRank) {
+  if (user.role === "admin" || user.postings.all) return false;
+  return topRank(user) < needRank && topActs(user) >= needRank;
+}
+
+// what to stamp on the record: the position they were acting as, or ""
+function actingAs(user, needRank) {
+  if (!standingIn(user, needRank)) return "";
+  var best = null;
+  user.postings.list.forEach(function (p) {
+    if (p.acts >= needRank && p.rank < needRank && (!best || p.acts > best.acts)) best = p;
+  });
+  if (!best) return "";
+  var at = readPositions().filter(function (x) { return x.rank === best.acts; })[0];
+  return at ? at.label : ("rank " + best.acts);
+}
+
+/* Does a posting cover a department/team?
+     a posting with no team   — department-wide, so every team beneath it
+     a posting in a team      — that team's records, plus anything filed at
+                                the department itself (general department work,
+                                including the flows its tasks run on)
+   What it never reaches is a sibling team: CRO SD does not see CRO CS. */
+function postingCovers(posting, dept, team) {
+  if (posting.dept !== str(dept).toLowerCase()) return false;
+  if (!posting.team) return true;                       // department-wide
+  if (!str(team)) return true;                          // general department work
+  return posting.team === str(team).toLowerCase();
+}
+
+// "write" if any covering posting grants it, else "read", else ""
+function reachFor(user, dept, team) {
+  if (user.role === "admin" || user.postings.all) return "write";
+  var best = "";
+  user.postings.list.forEach(function (p) {
+    if (!postingCovers(p, dept, team)) return;
+    if (p.access === "write") best = "write";
+    else if (!best) best = "read";
+  });
+  return best;
 }
 
 function tagList(cell) {
@@ -326,22 +464,21 @@ function ownsIt(user, record) {
   return !!owner && owner === user.userId.toLowerCase();
 }
 
+/* A record belongs to a department, and optionally to a team inside it.
+   With no department it is private to whoever made it. */
 function canRead(user, record) {
-  if (user.grants.all || user.role === "admin") return true;
+  if (user.postings.all || user.role === "admin") return true;
   if (ownsIt(user, record)) return true;
   if (str(record.assignee).toLowerCase() === user.userId.toLowerCase()) return true;
-  var tags = tagList(record.tags);
-  if (!tags.length) return false;            // untagged records stay with their owner
-  for (var i = 0; i < tags.length; i++) if (user.grants.read[tags[i]]) return true;
-  return false;
+  if (!str(record.dept)) return false;
+  return !!reachFor(user, record.dept, record.team);
 }
 
 function canWrite(user, record) {
-  if (user.grants.all || user.role === "admin") return true;
+  if (user.postings.all || user.role === "admin") return true;
   if (ownsIt(user, record)) return true;
-  var tags = tagList(record.tags);
-  for (var i = 0; i < tags.length; i++) if (user.grants.write[tags[i]]) return true;
-  return false;
+  if (!str(record.dept)) return false;
+  return reachFor(user, record.dept, record.team) === "write";
 }
 
 /* ---- tasks follow involvement, not tags ----------------------------------
@@ -362,8 +499,8 @@ function canReadTask(user, task) {
   return onTask(user, task);
 }
 
-// Editing a task needs involvement too — plus whoever wears a badge the task
-// is addressed to right now, so a desk can pick up what has been sent to it.
+// Editing a task needs involvement too — plus whoever staffs the desk the task
+// is sitting at, so a desk can pick up what has been sent to it.
 function canWriteTask(user, task, flow) {
   if (user.role === "admin") return true;
   if (!onTask(user, task)) return false;
@@ -372,18 +509,54 @@ function canWriteTask(user, task, flow) {
   if (str(task.assignee).toLowerCase() === me) return true;
   if (flow) {
     var step = stepIn(flow, task.stage);
-    if (step && wearsOne(user, step.badges)) return true;
+    if (step && matchesAny(user, step.to)) return true;
   }
   // a watcher who is not holding it may look but not change it
   return false;
 }
 
-function wearsOne(user, badges) {
-  if (!badges || !badges.length) return false;
-  for (var i = 0; i < badges.length; i++) {
-    if (user.badges.indexOf(String(badges[i]).toLowerCase()) >= 0) return true;
+/* Does any of this person's postings match one of a step's targets?
+   A target "cro.manager" matches a posting in any CRO team holding that
+   position; "cro.sd.tl" matches only the SD one. */
+function matchesTarget(posting, target) {
+  var bits = String(target || "").toLowerCase().split(".").filter(Boolean);
+  if (bits.length < 2) return false;
+  var dept = bits[0];
+  var team = bits.length >= 3 ? bits[1] : "";
+  var position = bits[bits.length - 1];
+  if (posting.dept !== dept) return false;
+  if (posting.position !== position) return false;
+  if (team && posting.team && posting.team !== team) return false;
+  if (team && !posting.team) return true;    // department-wide posting covers the team
+  return true;
+}
+
+function matchesAny(user, targets) {
+  if (!targets || !targets.length) return false;
+  if (user.postings.all || user.role === "admin") return true;
+  for (var i = 0; i < targets.length; i++) {
+    for (var j = 0; j < user.postings.list.length; j++) {
+      if (matchesTarget(user.postings.list[j], targets[i])) return true;
+    }
   }
   return false;
+}
+
+// everyone on the roster whose postings match one of these targets
+function staffFor(targets) {
+  if (!targets || !targets.length) return [];
+  var positions = positionIndex();
+  var out = [];
+  readObjects("Users").forEach(function (r) {
+    if (!str(r.userId)) return;
+    if (!(str(r.active) === "" || bool(r.active))) return;
+    var postings = parsePostings(r.postings, positions);
+    var hit = postings.list.some(function (p) {
+      return targets.some(function (t) { return matchesTarget(p, t); });
+    });
+    if (hit) out.push(str(r.userId));
+  });
+  return out;
 }
 
 /* ========================================================================
@@ -403,8 +576,8 @@ function findUser(userId) {
       email: str(r.email),
       role: (str(r.role) || "user").toLowerCase(),
       tagsRaw: str(r.tags),
-      badges: tagList(r.badges),
-      grants: parseGrants(r.tags),
+      postingsRaw: str(r.postings),
+      postings: parsePostings(r.postings, positionIndex()),
       plain: str(r.password),
       hash: str(r.passwordHash),
       active: str(r.active) === "" ? true : bool(r.active)
@@ -501,13 +674,19 @@ function apiLogin(body) {
 }
 
 function profile(u) {
-  var g = u.grants;
   return {
     userId: u.userId, name: u.name, email: u.email, role: u.role,
     tags: u.tagsRaw,
-    all: g.all || u.role === "admin",
-    read: Object.keys(g.read),
-    write: Object.keys(g.write)
+    postings: u.postingsRaw,
+    posts: u.postings.list.map(function (p) {
+      return { dept: p.dept, team: p.team, position: p.position,
+               access: p.access, rank: p.rank, acts: p.acts };
+    }),
+    all: u.postings.all || u.role === "admin",
+    rank: topRank(u),
+    acts: topActs(u),
+    // true when this person can act above their own standing — Next Inline
+    standsIn: topActs(u) > topRank(u)
   };
 }
 
@@ -550,7 +729,9 @@ function apiBootstrap(body) {
     user: profile(u),
     serverDay: isoDay(new Date()),
     tags: readTags(),
-    badges: readBadges(),
+    departments: readDepartments(),
+    teams: readTeams(),
+    positions: readPositions(),
     lists: readLists(),
     people: readPeople(),
     companies: [],
@@ -607,7 +788,7 @@ function apiBootstrap(body) {
     var id = str(r.id);
     if (!id) return;
     var mine = str(r.userId).toLowerCase() === u.userId.toLowerCase();
-    if (!mine && !visibleTasks[str(r.taskId)] && !u.grants.all) return;
+    if (!mine && !visibleTasks[str(r.taskId)] && !u.postings.all) return;
     if (str(r.date) && str(r.date) < since) return;
     var row = {
       id: id, taskId: str(r.taskId), userId: str(r.userId), date: str(r.date),
@@ -649,23 +830,63 @@ function readTags() {
     .sort(function (a, b) { return a.order - b.order; });
 }
 
-function readBadges() {
-  var rows = readObjects("Badges");
+function readDepartments() {
+  var rows = readObjects("Departments");
   if (!rows.length) {
-    sheetFor("Badges").getRange(2, 1, DEFAULT_BADGES.length, HEAD.Badges.length).setValues(DEFAULT_BADGES);
-    rows = readObjects("Badges");
+    sheetFor("Departments").getRange(2, 1, DEFAULT_DEPARTMENTS.length, HEAD.Departments.length)
+      .setValues(DEFAULT_DEPARTMENTS);
+    rows = readObjects("Departments");
   }
-  return rows
-    .filter(function (r) { return str(r.badge); })
-    .map(function (r) {
-      return {
-        badge: str(r.badge).toLowerCase(),
-        label: str(r.label) || str(r.badge),
-        colour: str(r.colour) || "#8b98a6",
-        order: num(r.order)
-      };
-    })
-    .sort(function (a, b) { return a.order - b.order; });
+  return rows.filter(function (r) { return str(r.dept); }).map(function (r) {
+    return {
+      dept: str(r.dept).toLowerCase(),
+      label: str(r.label) || str(r.dept),
+      colour: str(r.colour) || "#8b98a6",
+      order: num(r.order)
+    };
+  }).sort(function (a, b) { return a.order - b.order; });
+}
+
+function readTeams() {
+  var rows = readObjects("Teams");
+  if (!rows.length) {
+    sheetFor("Teams").getRange(2, 1, DEFAULT_TEAMS.length, HEAD.Teams.length).setValues(DEFAULT_TEAMS);
+    rows = readObjects("Teams");
+  }
+  return rows.filter(function (r) { return str(r.team); }).map(function (r) {
+    return {
+      team: str(r.team).toLowerCase(),
+      label: str(r.label) || str(r.team),
+      dept: str(r.dept).toLowerCase(),
+      colour: str(r.colour) || "#8b98a6",
+      order: num(r.order)
+    };
+  }).sort(function (a, b) { return a.order - b.order; });
+}
+
+var _positions = null;
+function readPositions() {
+  if (_positions) return _positions;
+  var rows = readObjects("Positions");
+  if (!rows.length) {
+    sheetFor("Positions").getRange(2, 1, DEFAULT_POSITIONS.length, HEAD.Positions.length)
+      .setValues(DEFAULT_POSITIONS);
+    rows = readObjects("Positions");
+  }
+  _positions = rows.filter(function (r) { return str(r.position); }).map(function (r) {
+    var rank = num(r.rank) || 10;
+    var acts = num(r.acts) || rank;
+    return {
+      position: str(r.position).toLowerCase(),
+      label: str(r.label) || str(r.position),
+      rank: rank,
+      acts: Math.max(acts, rank),          // you can never act below your own standing
+      access: (str(r.access) || "write").toLowerCase() === "read" ? "read" : "write",
+      colour: str(r.colour) || "#8b98a6",
+      order: num(r.order)
+    };
+  }).sort(function (a, b) { return a.order - b.order; });
+  return _positions;
 }
 
 function readLists() {
@@ -700,7 +921,10 @@ function readPeople() {
       return {
         userId: str(r.userId), name: str(r.name) || str(r.userId),
         role: (str(r.role) || "user").toLowerCase(),
-        badges: tagList(r.badges)
+        postings: str(r.postings),
+        posts: parsePostings(r.postings, positionIndex()).list.map(function (p) {
+          return { dept: p.dept, team: p.team, position: p.position };
+        })
       };
     });
 }
@@ -746,7 +970,7 @@ function apiSave(body) {
     HEAD[name].forEach(function (h) {
       if (h === "id" || h === "createdAt" || h === "updatedAt") return;
       if (incoming[h] === undefined) return;
-      if (h === "owner" && !(u.grants.all || u.role === "admin") && existing) return;
+      if (h === "owner" && !(u.postings.all || u.role === "admin") && existing) return;
       if (h === "stages") {
         // the builder sends an array of stage objects; the sheet holds one JSON cell
         record[h] = typeof incoming[h] === "string"
@@ -820,13 +1044,19 @@ function apiRemove(body) {
   }
 }
 
-function logActivity(u, entity, id, action, detail) {
+function logActivity(u, entity, id, action, detail, acting) {
   try {
     appendObject("Activity", {
-      at: nowIso(), userId: u.userId, entity: entity,
+      at: nowIso(), userId: u.userId, actingAs: acting || "", entity: entity,
       entityId: id, action: action, detail: detail || ""
     });
   } catch (e) { /* the audit trail must never block a save */ }
+}
+
+// a readable name for a user id, for error messages
+function personLabel(userId) {
+  var u = findUser(userId);
+  return u ? u.name : str(userId);
 }
 
 /* ========================================================================
@@ -856,8 +1086,9 @@ function parseStages(cell) {
       key: str(s.key) || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
       name: name,
       colour: str(s.colour) || "#8b98a6",
-      // older flows carried a free-text `role`; it reads as a badge key
-      badges: keyList(s.badges !== undefined ? s.badges : s.role),
+      // `to` is the postings that staff this step. Older flows carried
+      // `badges` (flat role keys); they read straight across as patterns.
+      to: keyList(s.to !== undefined ? s.to : (s.badges !== undefined ? s.badges : s.role)),
       next: keyList(s.next),
       slaHours: num(s.slaHours),
       entry: !!s.entry,
@@ -914,16 +1145,8 @@ function findFlow(u, flowId) {
   fail("No such flow.");
 }
 
-// who, on the roster, wears a given badge
-function wearersOf(badge) {
-  var want = String(badge || "").toLowerCase();
-  if (!want) return [];
-  return readObjects("Users").filter(function (r) {
-    if (!str(r.userId)) return false;
-    if (!(str(r.active) === "" || bool(r.active))) return false;
-    return tagList(r.badges).indexOf(want) >= 0;
-  }).map(function (r) { return str(r.userId); });
-}
+/* kept as a thin alias: "who can take this step on" */
+function wearersOf(target) { return staffFor([target]); }
 
 /* Forward a task to the next desk.
    Closes the open FlowLog row, opens the next one, reassigns the task to the
@@ -959,15 +1182,13 @@ function apiForward(body) {
       }
     }
 
-    // who picks it up: the named person, or the only wearer of the badge
+    // who picks it up: the named person, or the only one staffing the desk
     var assignee = str(body.assignee);
-    if (step.badges.length) {
-      var pool = [];
-      step.badges.forEach(function (b) {
-        wearersOf(b).forEach(function (w) { if (pool.indexOf(w) < 0) pool.push(w); });
-      });
+    if (step.to.length) {
+      var pool = staffFor(step.to);
       if (!pool.length) {
-        fail("Nobody wears the badge for " + step.name + " yet — add it to someone in Admin.", "route");
+        fail("Nobody holds a posting for " + step.name + " yet — " +
+             "give someone " + step.to.join(" or ") + " in Admin.", "route");
       }
       if (!assignee) {
         if (pool.length === 1) assignee = pool[0];
@@ -977,10 +1198,22 @@ function apiForward(body) {
       for (var p = 0; p < pool.length; p++) {
         if (pool[p].toLowerCase() === assignee.toLowerCase()) { ok = true; assignee = pool[p]; break; }
       }
-      if (!ok) fail(assignee + " does not wear a badge for " + step.name + ".", "route");
+      if (!ok) fail(personLabel(assignee) + " does not hold a posting for " + step.name + ".", "route");
     } else if (!assignee && step.terminal) {
       assignee = str(existing.assignee);          // a final step stays with whoever finished it
     }
+
+    /* What counts as a TL-level act, and so gets attributed when somebody is
+       only standing in at that rank:
+         - moving work that is not yours, i.e. reaching over whoever holds it
+         - signing off a step marked as an approval
+       Passing your own finished work to the next desk is ordinary, whatever
+       your rank, and is not singled out. */
+    var here = stepIn(flow, existing.stage);
+    var mine = str(existing.assignee).toLowerCase() === u.userId.toLowerCase();
+    var approving = !!(here && here.approval);
+    var needRank = (!mine || approving) ? TL_RANK : 0;
+    var acting = needRank ? actingAs(u, needRank) : "";
 
     var now = new Date();
     var logs = readObjects("FlowLog");
@@ -993,7 +1226,7 @@ function apiForward(body) {
         stage: str(logs[k].stage), assignee: str(logs[k].assignee),
         enteredAt: str(logs[k].enteredAt), exitedAt: now.toISOString(),
         minutes: Math.max(0, Math.round((now.getTime() - entered.getTime()) / 60000)),
-        byUser: str(logs[k].byUser), note: str(logs[k].note)
+        byUser: str(logs[k].byUser), actingAs: str(logs[k].actingAs), note: str(logs[k].note)
       };
       writeRow("FlowLog", logs[k]._row, closed);
       break;
@@ -1002,7 +1235,7 @@ function apiForward(body) {
     var opened = {
       id: newId("fl"), taskId: str(existing.id), flowId: str(flow.id), stage: step.key,
       assignee: assignee, enteredAt: now.toISOString(), exitedAt: "", minutes: 0,
-      byUser: u.userId, note: str(body.note)
+      byUser: u.userId, actingAs: acting, note: str(body.note)
     };
     appendObject("FlowLog", opened);
 
@@ -1016,7 +1249,8 @@ function apiForward(body) {
     record.updatedAt = now.toISOString();
     writeRow("Tasks", existing._row, record);
 
-    logActivity(u, "Tasks", record.id, "forward", step.name + " → " + (assignee || "unassigned"));
+    logActivity(u, "Tasks", record.id, "forward",
+                step.name + " → " + (assignee || "unassigned"), acting);
     delete record._row;
     record._canWrite = canWriteTask(u, record, flow);
     return { ok: true, task: record, closed: closed, opened: opened };
@@ -1282,7 +1516,7 @@ function apiAdminUsers(body) {
       return {
         userId: str(r.userId), name: str(r.name), email: str(r.email),
         role: (str(r.role) || "user").toLowerCase(), tags: str(r.tags),
-        badges: str(r.badges),
+        postings: str(r.postings),
         active: str(r.active) === "" ? true : bool(r.active),
         hasPassword: !!(str(r.password) || str(r.passwordHash))
       };
@@ -1317,7 +1551,7 @@ function apiAdminSaveUser(body) {
       email: incoming.email !== undefined ? str(incoming.email) : str(existing && existing.email),
       role: (incoming.role !== undefined ? str(incoming.role) : str(existing && existing.role) || "user").toLowerCase(),
       tags: tagList(incoming.tags !== undefined ? incoming.tags : (existing && existing.tags)).join(", "),
-      badges: tagList(incoming.badges !== undefined ? incoming.badges : (existing && existing.badges)).join(", "),
+      postings: tagList(incoming.postings !== undefined ? incoming.postings : (existing && existing.postings)).join(", "),
       password: "",
       passwordHash: existing ? str(existing.passwordHash) : "",
       active: incoming.active !== undefined ? !!incoming.active
@@ -1333,7 +1567,7 @@ function apiAdminSaveUser(body) {
 
     logActivity(admin, "Users", record.userId, existing ? "update" : "create", record.name);
     return { ok: true, record: { userId: record.userId, name: record.name, email: record.email,
-      role: record.role, tags: record.tags, badges: record.badges, active: record.active,
+      role: record.role, tags: record.tags, postings: record.postings, active: record.active,
       hasPassword: !!(record.passwordHash || str(incoming.password)) } };
   } finally {
     lock.releaseLock();
@@ -1375,34 +1609,66 @@ function apiAdminSaveTag(body) {
   }
 }
 
-function apiAdminSaveBadge(body) {
+/* One endpoint for all three org catalogues — they differ only in their key
+   column and a couple of extra fields. */
+var ORG_SHEETS = { Departments: "dept", Teams: "team", Positions: "position" };
+
+function apiAdminSaveOrg(body) {
   var admin = requireAdmin(body.token);
+  var name = String(body.kind || "");
+  var keyCol = ORG_SHEETS[name];
+  if (!keyCol) fail("Unknown catalogue: " + name);
+
   var incoming = body.record || {};
-  var badge = str(incoming.badge).toLowerCase().replace(/[^a-z0-9\-]+/g, "-").replace(/^-|-$/g, "");
-  if (!badge) fail("A badge name is required.");
+  var key = str(incoming[keyCol]).toLowerCase().replace(/[^a-z0-9\-]+/g, "-").replace(/^-|-$/g, "");
+  if (!key) fail("A key is required.");
 
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    var rows = readObjects("Badges");
+    var rows = readObjects(name);
     var existing = null;
     for (var i = 0; i < rows.length; i++) {
-      if (str(rows[i].badge).toLowerCase() === badge) { existing = rows[i]; break; }
+      if (str(rows[i][keyCol]).toLowerCase() === key) { existing = rows[i]; break; }
     }
-    if (incoming.remove && existing) {
-      sheetFor("Badges").deleteRow(existing._row);
-      return { ok: true, removed: badge };
+
+    if (incoming.remove) {
+      if (!existing) return { ok: true, removed: key };
+      if (name === "Departments") {
+        var teams = readTeams().filter(function (t) { return t.dept === key; });
+        if (teams.length) fail("Move or remove its teams first: " +
+          teams.map(function (t) { return t.label; }).join(", "), "inuse");
+      }
+      sheetFor(name).deleteRow(existing._row);
+      _positions = null;
+      logActivity(admin, name, key, "delete", "");
+      return { ok: true, removed: key };
     }
-    var record = {
-      badge: badge,
-      label: str(incoming.label) || (existing ? str(existing.label) : badge),
-      colour: str(incoming.colour) || (existing ? str(existing.colour) : "#8b98a6"),
-      order: incoming.order !== undefined ? num(incoming.order)
-           : (existing ? num(existing.order) : rows.length)
-    };
-    if (existing) writeRow("Badges", existing._row, record);
-    else appendObject("Badges", record);
-    logActivity(admin, "Badges", badge, existing ? "update" : "create", record.label);
+
+    var record = {};
+    record[keyCol] = key;
+    record.label = str(incoming.label) || (existing ? str(existing.label) : key);
+    record.colour = str(incoming.colour) || (existing ? str(existing.colour) : "#8b98a6");
+    record.order = incoming.order !== undefined ? num(incoming.order)
+                 : (existing ? num(existing.order) : rows.length);
+
+    if (name === "Teams") {
+      record.dept = str(incoming.dept).toLowerCase() || (existing ? str(existing.dept) : "");
+      if (!record.dept) fail("A team has to belong to a department.");
+    }
+    if (name === "Positions") {
+      var rank = incoming.rank !== undefined ? num(incoming.rank) : (existing ? num(existing.rank) : 10);
+      var acts = incoming.acts !== undefined ? num(incoming.acts) : (existing ? num(existing.acts) : rank);
+      record.rank = rank || 10;
+      record.acts = Math.max(acts || record.rank, record.rank);
+      record.access = (incoming.access !== undefined ? str(incoming.access)
+                      : (existing ? str(existing.access) : "write")).toLowerCase() === "read" ? "read" : "write";
+    }
+
+    if (existing) writeRow(name, existing._row, record);
+    else appendObject(name, record);
+    _positions = null;
+    logActivity(admin, name, key, existing ? "update" : "create", record.label);
     return { ok: true, record: record };
   } finally {
     lock.releaseLock();
@@ -1431,12 +1697,16 @@ function ensureSchema(force) {
 
     Object.keys(HEAD).forEach(function (name) { sheetFor(name); headersOf(name); });
     readTags();
-    readBadges();
+    readDepartments();
+    readTeams();
+    _positions = null;
+    readPositions();
     readLists();
 
     if (!readObjects("Flows").length) {
       appendObject("Flows", {
-        id: newId("flw"), name: DEFAULT_FLOW.name, tags: DEFAULT_FLOW.tags,
+        id: newId("flw"), name: DEFAULT_FLOW.name,
+        dept: DEFAULT_FLOW.dept, team: DEFAULT_FLOW.team, tags: "",
         description: DEFAULT_FLOW.description, stages: JSON.stringify(DEFAULT_FLOW.stages),
         active: true, owner: "admin", createdAt: nowIso(), updatedAt: nowIso()
       });
@@ -1445,15 +1715,67 @@ function ensureSchema(force) {
     if (!readObjects("Users").length) {
       appendObject("Users", {
         userId: "admin", name: "Admin", email: "", role: "admin",
-        tags: "*", badges: "cro-manager", password: "changeme", passwordHash: "", active: true
+        postings: "*", tags: "", password: "changeme", passwordHash: "", active: true
       });
     }
+    carryOverOldAccess();
 
     props.setProperty("schema", SCHEMA_VERSION);
     return true;
   } finally {
     lock.releaseLock();
   }
+}
+
+/* Carry the old model over, once. Before this version access came from flat
+   tags and flat badges; now it comes from postings and a record's department.
+   This only ever fills blanks, so it is safe to run again and will not touch
+   anything somebody has since set by hand. */
+function carryOverOldAccess() {
+  var depts = {}, teams = {}, positions = {};
+  readDepartments().forEach(function (d) { depts[d.dept] = true; });
+  readTeams().forEach(function (t) { teams[t.team] = t.dept; });
+  readPositions().forEach(function (p) { positions[p.position] = true; });
+
+  // "cro-sd-tl" -> "cro.sd.tl",  "cro-cs" -> "cro.cs.member",  "csm" -> "csm.member"
+  function badgeToPosting(badge) {
+    var bits = String(badge || "").toLowerCase().split("-").filter(Boolean);
+    if (!bits.length || !depts[bits[0]]) return "";
+    var dept = bits.shift();
+    var position = bits.length && positions[bits[bits.length - 1]] ? bits.pop() : "member";
+    var team = bits.length && teams[bits[bits.length - 1]] === dept ? bits.pop() : "";
+    return dept + (team ? "." + team : "") + "." + position;
+  }
+
+  var users = readObjects("Users");
+  users.forEach(function (r) {
+    if (!str(r.userId) || str(r.postings)) return;          // already moved over
+    var made = [];
+    if (tagList(r.tags).indexOf("*") >= 0) made.push("*");
+    tagList(r.badges).forEach(function (b) {
+      var p = badgeToPosting(b);
+      if (p && made.indexOf(p) < 0) made.push(p);
+    });
+    if (!made.length) return;
+    var record = {};
+    HEAD.Users.forEach(function (h) { record[h] = r[h]; });
+    record.postings = made.join(", ");
+    writeRow("Users", r._row, record);
+  });
+
+  // a record tagged with what is now a department key moves to that department
+  ["Companies", "Contacts", "Deals", "Tasks", "Flows"].forEach(function (name) {
+    readObjects(name).forEach(function (r) {
+      if (!str(r.id) || str(r.dept)) return;
+      var hit = "";
+      tagList(r.tags).forEach(function (t) { if (!hit && depts[t]) hit = t; });
+      if (!hit) return;
+      var record = {};
+      HEAD[name].forEach(function (h) { record[h] = r[h]; });
+      record.dept = hit;
+      writeRow(name, r._row, record);
+    });
+  });
 }
 
 /* ---- the sheet's own menu: a repair kit, not a required step ---- */
@@ -1482,15 +1804,23 @@ function healthCheck() {
   var users = readObjects("Users").filter(function (r) { return str(r.userId); });
   var admins = users.filter(function (r) { return (str(r.role) || "user").toLowerCase() === "admin"; });
   var plain = users.filter(function (r) { return str(r.password); });
-  var badges = readBadges();
+  var depts = readDepartments(), teams = readTeams(), positions = readPositions();
   var flows = readObjects("Flows").filter(function (r) { return str(r.id); });
+  var index = positionIndex();
 
-  lines.push("People: " + users.length + "  (" + admins.length + " admin)");
-  lines.push("Badges: " + badges.length);
-  lines.push("Tags:   " + readTags().length);
-  lines.push("Flows:  " + flows.length);
-  lines.push("Tasks:  " + readObjects("Tasks").filter(function (r) { return str(r.id); }).length);
+  lines.push("People:      " + users.length + "  (" + admins.length + " admin)");
+  lines.push("Departments: " + depts.length);
+  lines.push("Teams:       " + teams.length);
+  lines.push("Positions:   " + positions.length);
+  lines.push("Client tags: " + readTags().length);
+  lines.push("Flows:       " + flows.length);
+  lines.push("Tasks:       " + readObjects("Tasks").filter(function (r) { return str(r.id); }).length);
   lines.push("");
+
+  var deptKeys = {};
+  depts.forEach(function (d) { deptKeys[d.dept] = true; });
+  var teamOf = {};
+  teams.forEach(function (t) { teamOf[t.team] = t.dept; });
 
   var warn = [];
   if (!admins.length) warn.push("- No admin account. Nobody can manage people.");
@@ -1498,8 +1828,20 @@ function healthCheck() {
     warn.push("- " + plain.length + " account(s) still have a plain password in " +
               "the sheet. It is hashed the first time each signs in.");
   }
+  teams.forEach(function (t) {
+    if (!deptKeys[t.dept]) warn.push("- Team \"" + t.label + "\" points at a department that does not exist (" + t.dept + ").");
+  });
   users.forEach(function (r) {
-    if (!str(r.badges)) warn.push("- " + str(r.userId) + " wears no badge, so no flow step can be handed to them.");
+    var raw = str(r.postings);
+    if (!raw) {
+      warn.push("- " + str(r.userId) + " holds no posting, so they reach nothing and no step can be handed to them.");
+      return;
+    }
+    parsePostings(raw, index).list.forEach(function (p) {
+      if (!deptKeys[p.dept]) warn.push("- " + str(r.userId) + " is posted to \"" + p.dept + "\", which is not a department.");
+      if (p.team && teamOf[p.team] !== p.dept) warn.push("- " + str(r.userId) + ": \"" + p.team + "\" is not a team inside " + p.dept + ".");
+      if (!index[p.position]) warn.push("- " + str(r.userId) + " holds the position \"" + p.position + "\", which is not in the catalogue.");
+    });
   });
   flows.forEach(function (f) {
     var steps = parseStages(f.stages);
@@ -1508,12 +1850,14 @@ function healthCheck() {
       warn.push("- Flow \"" + str(f.name) + "\" has no entry step; the first one is used.");
     }
     steps.forEach(function (s) {
-      s.badges.forEach(function (b) {
-        if (!wearersOf(b).length) {
-          warn.push("- \"" + str(f.name) + " › " + s.name + "\" is addressed to the badge " +
-                    "\"" + b + "\", which nobody wears.");
-        }
-      });
+      if (!s.to.length && !s.terminal) {
+        warn.push("- \"" + str(f.name) + " › " + s.name + "\" is addressed to nobody.");
+        return;
+      }
+      if (s.to.length && !staffFor(s.to).length) {
+        warn.push("- \"" + str(f.name) + " › " + s.name + "\" wants " + s.to.join(" or ") +
+                  ", which nobody holds.");
+      }
     });
   });
 

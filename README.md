@@ -25,12 +25,46 @@ the status bar along the bottom and is visible from every view.
 department, a client, a team. It is a lens, not a permission: it cannot show
 you anything your tags do not already allow.
 
-## Badges
+## The org chart is the access model
 
-A **badge** is a desk, not a person: CSM, DM, Ops, CRO Manager, CRO CS, CRO GD,
-CRO SD TL, CRO SD. People wear one or more of them (Admin ▸ People). Badges are
-what flows route to — a step says "CRO GD handles this", and anyone wearing
-that badge can be handed it.
+Three catalogues, all editable in Admin:
+
+- **Departments** — CSM, DM, Ops, CRO
+- **Teams** — each inside a department. CRO has CS, GD and SD.
+- **Positions** — Manager, TL, Next Inline, Member, Observer. Each carries a
+  **rank** and a default of **read** or **write**.
+
+A person holds **postings**, written `dept.team.position`:
+
+| Posting | Means |
+|---|---|
+| `cro.sd.tl` | TL of the SD team inside CRO |
+| `cro.manager` | department-wide — every team under CRO |
+| `cro.gd.member:r` | an exception: read only for this one person |
+
+A record belongs to a department, and optionally a team. Who reaches it:
+
+- a **department-wide** posting reaches the department and every team in it;
+- a **team** posting reaches its own team, plus anything filed at the
+  department itself (general department work, including the flows its tasks
+  run on);
+- it never reaches a **sibling team** — CRO SD does not see CRO CS;
+- a record with **no department** is private to whoever made it, and admins.
+
+### Standing in
+
+**Next Inline** is rank 15 with an `acts` rank of 20, so they can do everything
+a TL can. The difference is that TL-level acts get attributed:
+
+- **TL-level** — moving work somebody else is holding, or signing off a step
+  marked as an approval.
+- **Ordinary** — passing your own finished work to the next desk, whatever
+  your rank. Not singled out.
+
+When a Next Inline does something TL-level, the hand-off record and the task
+drawer say *"sent this standing in as TL"*. A real TL doing the same thing is
+not flagged. Any position can be set up this way: give it an `acts` rank above
+its own.
 
 ## Flows — where a task goes next
 
@@ -43,7 +77,7 @@ Each step carries:
 | | |
 |---|---|
 | **Name and colour** | what the forward button and the stage pill read |
-| **Handled by** | the badges that staff this desk — who the step can be handed to |
+| **Handled by** | the postings that staff this desk — `cro.sd.tl` and so on. Those are the people the step can be handed to |
 | **Can be sent to** | the steps it may forward to. This is the routing: a step can branch, and send work back as well as on |
 | **Target** | hours the task should sit here; past that it is flagged as over |
 | **Work comes in here** | an entry point — where new tasks join the flow |
@@ -53,24 +87,26 @@ Each step carries:
 A worked example, which is the flow the setup seeds:
 
 ```
-Raised (CSM, DM, Ops) → Triage (CRO Manager) → Copy (CRO CS) ─┐
-                                             → Design (CRO GD) ┤→ Review (CRO Manager)
-                                             → Build (CRO SD TL, CRO SD) ─┘
-                        Review → back to Copy / Design / Build, or → Delivered
+Raised  (csm.member, dm.member, ops.member)
+  → Triage (cro.manager)
+      → Copy   (cro.cs.tl)   ┐
+      → Design (cro.gd.tl)   ├→ Review (cro.manager)
+      → Build  (cro.sd.tl, cro.sd.member) ┘
+  Review → back to Copy / Design / Build, or → Delivered
 ```
 
 Build one in **Flows**: drag step cards to reorder, `+` between two cards to
-insert one, tick the badges that handle it and the steps it can go to, then
+insert one, add the desks that handle it and tick the steps it can go to, then
 **Save flow**. Renaming a step is safe — it keeps its key, so routes pointing
 at it and tasks sitting in it both survive.
 
 Put a task on a flow in the task editor and it enters at an entry step. Then:
 
 - The task drawer shows **Forward to** — only the destinations this flow
-  actually allows from where the task is, each labelled with its badge and who
+  actually allows from where the task is, each labelled with its desk and who
   is behind it. One click sends it.
-- If one person wears the badge, it goes straight to them. If several do, you
-  are asked who takes it on, and can leave a note with the hand-off.
+- If one person holds that posting, it goes straight to them. If several do,
+  you are asked who takes it on, and can leave a note with the hand-off.
 - Forwarding **reassigns** the task. Whoever receives it can now see and work
   on it; everyone who has held it stays on the task as a participant.
 - The backend refuses a move the map does not allow, so the route is real
@@ -95,35 +131,26 @@ Tasks do **not** follow tags. A task is visible only to:
 - whoever is holding it now,
 - anyone who has held it along the way (its participants),
 
-plus admins. Nothing else opens it up — not a tag, not a badge, not being in
+plus admins. Nothing else opens it up — not a tag, not a posting, not being in
 the same department. The drawer spells this out under **Who can see this**, and
 you pull someone in by adding them as a watcher. A watcher can follow the task
 but cannot change it unless it is handed to them.
 
-Tags on a task decide which flow and badges apply, and nothing more.
+A task's department decides which flow and desks apply, and nothing more.
 
-## Access to everything else
+## Tags
 
-Companies, contacts, deals and flows hang off tags. A person's `tags` cell in
-the `Users` tab:
+Tags are **client labels only** now — BM, RW, AUJ. They say which client a
+record is for, and grant nobody anything. Access is the org chart, above.
 
-| Entry | Means |
-|---|---|
-| `cro` | read **and** write anything tagged `cro` |
-| `cro:r` | read only — the UI locks, the backend refuses writes |
-| `*` | everything |
+## A few more rules
 
-On top of that you always see and edit what you own, and a record with **no**
-tags is private to its owner and admins — which is why the editor pre-selects a
-writable tag on anything new. `role = admin` adds the Admin view and overrides
-every check.
-
-Flows obey these rules: a flow tagged `bm` is invisible to someone without
-`bm`, and read-only to someone holding `bm:r`.
+You always see and edit what you own. `role = admin` adds the Admin view and
+overrides every check, including the routing map.
 
 Editing a task needs more than sight of it: you must have raised it, be holding
-it, or wear a badge for the desk it is sitting at. Watchers can look, not
-touch. Only whoever raised a task can delete it.
+it, or staff the desk it is sitting at. Watchers can look, not touch. Only
+whoever raised a task can delete it.
 
 All of this is enforced in the Apps Script, not the browser: bootstrap filters
 rows before they leave the sheet, and every save re-checks. The UI only
@@ -135,8 +162,8 @@ reflects the `_canWrite` flag the backend stamps on each row.
 - **Deals** — a drag-and-drop pipeline, or a grid.
 - **Contacts / Companies** — with their people, deals and tasks on the record.
 - **Time** — every timer session, by person and by task, plus manual entries.
-- **Admin** — people, their tags and badges, the badge catalogue and the tag
-  catalogue.
+- **Admin** — people and their postings, plus the department, team, position
+  and client-tag catalogues.
 
 ## Running it
 

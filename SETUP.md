@@ -74,13 +74,13 @@ Still in the Apps Script editor:
 Paste the `/exec` URL into a browser tab. You should see:
 
 ```json
-{"ok":true,"service":"crm","version":2,"schema":"2026-10-22.1","builtJustNow":true,...}
+{"ok":true,"service":"crm","version":2,"schema":"2026-10-23.1","builtJustNow":true,...}
 ```
 
 Go back to the spreadsheet tab and reload it. Every tab is now there — Users,
-Sessions, Tags, Badges, Lists, Companies, Contacts, Deals, Tasks, Flows,
-FlowLog, TimeLog, Activity — with the starter badges, tags, pipeline stages and
-one example routing flow.
+Sessions, Departments, Teams, Positions, Tags, Lists, Companies, Contacts,
+Deals, Tasks, Flows, FlowLog, TimeLog, Activity — with the starter org chart,
+client tags, pipeline stages and one example routing flow.
 
 If you instead see an HTML error page, or `builtJustNow` never goes true, jump
 to **When something is wrong** at the bottom.
@@ -125,13 +125,23 @@ Then, immediately: **Settings (the gear, bottom left) ▸ My password ▸ Change
 
 Everything else is cosmetic; this part is worth getting right.
 
-### Badges — the desks
+### The org chart — departments, teams, positions
 
-**Admin ▸ Badges.** Already there: CSM, DM, Ops, CRO Manager, CRO CS, CRO GD,
-CRO SD TL, CRO SD. Rename, recolour, delete and add until the list is your
-actual org.
+This is the access model, so it is worth ten minutes.
 
-A badge is a desk, not a person. Several people can wear the same one.
+**Admin ▸ Departments.** CSM, DM, Ops and CRO are already there. Rename,
+recolour, add and delete until it is your actual org.
+
+**Admin ▸ Teams.** Each sits inside a department — CRO has CS, GD and SD out of
+the box. A department with no teams is fine.
+
+**Admin ▸ Positions.** Manager, TL, Next Inline, Member, Observer. Each has:
+
+| | |
+|---|---|
+| **Rank** | where they stand. 20 and above counts as TL-level. |
+| **Acts at rank** | the rank they may exercise. Set it above their own and they can stand in, with those acts recorded as such. Next Inline is rank 15 acting at 20. |
+| **Default access** | read or write, before any per-person exception. |
 
 ### Tags — who can reach which CRM data
 
@@ -146,17 +156,22 @@ see below). Make one per client, department or team.
 |---|---|
 | User ID | lowercase, no spaces — what they type to sign in |
 | Password | you set it; they change it from Settings afterwards |
-| Role | `User`, or `Admin` for whoever manages people and badges |
-| Tags | `cro` for read+write, `cro:r` for read-only, `*` for everything |
-| Badges | every desk they staff |
+| Role | `User`, or `Admin` for whoever manages people and the org chart |
+| Postings | one per desk they sit at — **+ Posting**, then pick a department, optionally a team, and a position |
+| Client tags | optional labels for filtering |
 
-**Anyone who should receive tasks needs at least one badge.** Someone with no
-badge can raise and watch tasks, but no flow step can be handed to them.
+A posting reads `cro.sd.tl`. Leave the team as *whole department* and it
+becomes `cro.manager`, which reaches every team under CRO. The position sets
+read or write; the access dropdown on the posting overrides it for that one
+person.
+
+**Anyone who should receive tasks needs at least one posting.** Someone with
+none can raise and watch tasks, but no flow step can be handed to them.
 
 ### Flows
 
 **Flows ▸ + Flow**, or edit the seeded **CRO request** one. Each step names the
-badges that handle it and the steps it can be sent to — that second list is the
+desks that handle it and the steps it can be sent to — that second list is the
 routing. See the README for the detail.
 
 ---
@@ -169,7 +184,7 @@ cannot see a task, the answer is always: hand it to them, or add them as a
 watcher. This is deliberate — it is the rule you asked for.
 
 **Forwarding reassigns.** Sending a task to the next desk hands it to a person
-wearing that desk's badge, which is what puts it in front of them.
+holding that desk's posting, which is what puts it in front of them.
 
 ---
 
@@ -198,8 +213,9 @@ you are unsure.
 Reload the spreadsheet after step 3 and there is a **CRM** menu. You should not
 need it, but:
 
-- **Health check** — people, badges, flows and task counts, plus warnings:
-  nobody wearing a badge some flow step is addressed to, accounts with no badge,
+- **Health check** — people, org chart, flow and task counts, plus warnings:
+  nobody holding a posting some flow step is addressed to, accounts with none,
+  postings naming a department, team or position that does not exist,
   flows with no entry step, no admin.
 - **Rebuild sheets now** — forces the build. Safe; it never moves or deletes
   anything.
@@ -236,8 +252,13 @@ That is the rule, not a fault. Hand it to them or add them as a watcher.
 The map has no route between those steps. Open the flow and tick Y under X's
 *Can be sent to*.
 
-**"Nobody wears the badge for X yet."**
-Give that badge to someone in Admin ▸ People.
+**"Nobody holds a posting for X yet."**
+Give someone that department-team-position in Admin ▸ People.
+
+**Someone in CRO SD cannot see CRO CS's work.**
+That is the model: sibling teams are separate. A department-wide posting
+(`cro.manager`) reaches both; anything filed at CRO itself, with no team, is
+visible to everyone in CRO.
 
 ---
 

@@ -135,7 +135,7 @@ const API = (function () {
     adminUsers: () => call("adminUsers"),
     saveUser: record => call("adminSaveUser", { record }),
     saveTag: record => call("adminSaveTag", { record }),
-    saveBadge: record => call("adminSaveBadge", { record }),
+    saveOrg:   (kind, record) => call("adminSaveOrg", { kind, record }),
     changePassword: (current, next) => call("changePassword", { current, next })
   };
 })();

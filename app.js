@@ -69,7 +69,8 @@ const slug = s => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").repl
 /* ---------- state ---------- */
 const state = {
   user: null,
-  data: { companies: [], contacts: [], deals: [], tasks: [], flows: [], flowlog: [], time: [], tags: [], badges: [], lists: {}, people: [] },
+  data: { companies: [], contacts: [], deals: [], tasks: [], flows: [], flowlog: [], time: [],
+          tags: [], departments: [], teams: [], positions: [], lists: {}, people: [] },
   running: null,
   users: [],
   view: "dash",
@@ -111,12 +112,8 @@ function tagsHtml(v) {
   const list = tagsOf(v);
   return list.length ? `<span class="tags">${list.map(tagHtml).join("")}</span>` : '<span class="ro">private</span>';
 }
-function canWriteTag(tag) {
-  if (!state.user) return false;
-  return state.user.all || (state.user.write || []).indexOf(lc(tag)) >= 0;
-}
-const myWritableTags = () =>
-  state.user && state.user.all ? state.data.tags.map(t => t.tag) : state.data.tags.map(t => t.tag).filter(canWriteTag);
+// tags are client labels now — anyone may put one on anything they can edit
+const canWriteTag = () => true;
 
 function listMeta(type, value) {
   return (state.data.lists[type] || []).find(o => lc(o.value) === lc(value)) ||
@@ -128,34 +125,125 @@ function pillHtml(type, value) {
   return `<span class="pill" style="--c:${esc(m.colour)}"><span class="dot"></span>${esc(m.label)}</span>`;
 }
 
-/* ---------- badges: the roles a task gets handed between ---------- */
-function badgeMeta(b) {
-  return state.data.badges.find(x => x.badge === lc(b)) || { badge: lc(b), label: b, colour: "#8b98a6" };
-}
-function badgeHtml(b) {
-  const m = badgeMeta(b);
+/* ---------- the org chart: departments, teams, positions ----------
+   A posting is written dept.team.position ("cro.sd.tl"), or dept.position for
+   the whole department. It is both who someone is and what they can reach. */
+const deptMeta = d => state.data.departments.find(x => x.dept === lc(d)) ||
+  { dept: lc(d), label: d || "—", colour: "#8b98a6" };
+const teamMeta = t => state.data.teams.find(x => x.team === lc(t)) ||
+  { team: lc(t), label: t || "", dept: "", colour: "#8b98a6" };
+const posMeta = p => state.data.positions.find(x => x.position === lc(p)) ||
+  { position: lc(p), label: p || "", rank: 10, acts: 10, access: "write", colour: "#8b98a6" };
+
+const teamsIn = dept => state.data.teams.filter(t => t.dept === lc(dept));
+
+function deptHtml(d) {
+  if (!d) return '<span class="ro">—</span>';
+  const m = deptMeta(d);
   return `<span class="badge" style="--c:${esc(m.colour)}">${esc(m.label)}</span>`;
 }
-function badgesHtml(list) {
-  const l = (list || []).filter(Boolean);
-  return l.length ? `<span class="tags">${l.map(badgeHtml).join("")}</span>` : '<span class="ro">anyone</span>';
+// "CRO › SD" for a record, or just the department
+function scopeHtml(dept, team) {
+  if (!dept) return '<span class="ro">private</span>';
+  let h = deptHtml(dept);
+  if (team) {
+    const t = teamMeta(team);
+    h += `<span class="sep">›</span><span class="badge" style="--c:${esc(t.colour)}">${esc(t.label)}</span>`;
+  }
+  return `<span class="tags">${h}</span>`;
 }
-// everyone on the roster wearing a badge
-function wearers(badge) {
-  return state.data.people.filter(p => (p.badges || []).indexOf(lc(badge)) >= 0);
+
+// parse "cro.sd.tl:r" into its parts
+function parsePosting(raw) {
+  let s = lc(raw).trim();
+  if (!s) return null;
+  if (s === "*") return { all: true, label: "Everything" };
+  let override = "";
+  const m = s.match(/:(r|w|read|write)$/);
+  if (m) { override = m[1][0] === "r" ? "read" : "write"; s = s.replace(/:(r|w|read|write)$/, ""); }
+  const bits = s.split(".").filter(Boolean);
+  if (bits.length < 2) return null;
+  const position = bits[bits.length - 1];
+  const p = posMeta(position);
+  return {
+    dept: bits[0],
+    team: bits.length >= 3 ? bits[1] : "",
+    position, override,
+    access: override || p.access,
+    rank: p.rank, acts: p.acts
+  };
 }
-function wearersOfStep(step) {
-  if (!step || !step.badges || !step.badges.length) return state.data.people.slice();
-  const seen = {}, out = [];
-  step.badges.forEach(b => wearers(b).forEach(p => {
-    if (!seen[p.userId]) { seen[p.userId] = 1; out.push(p); }
-  }));
-  return out;
+const postingsOf = cell => String(cell || "").split(/[,;\n]/).map(parsePosting).filter(Boolean);
+
+function postingHtml(p) {
+  if (!p) return "";
+  if (p.all) return `<span class="badge" style="--c:#2dd4bf">Everything</span>`;
+  const d = deptMeta(p.dept), t = p.team ? teamMeta(p.team) : null, pos = posMeta(p.position);
+  return `<span class="posting" style="--c:${esc(d.colour)}">` +
+    `<b>${esc(d.label)}</b>` +
+    (t ? `<span class="sep">›</span>${esc(t.label)}` : "") +
+    `<span class="sep">›</span><span class="pos" style="--c:${esc(pos.colour)}">${esc(pos.label)}</span>` +
+    (p.access === "read" ? `<span class="ro"> read</span>` : "") +
+    `</span>`;
 }
-const myBadges = () => {
-  const me = state.data.people.find(p => lc(p.userId) === lc(state.user.userId));
-  return (me && me.badges) || [];
+const postingsHtml = cell => {
+  const list = postingsOf(cell);
+  return list.length ? `<span class="tags">${list.map(postingHtml).join("")}</span>` : '<span class="ro">none</span>';
 };
+const postingText = p => p.all ? "*" :
+  p.dept + (p.team ? "." + p.team : "") + "." + p.position + (p.override === "read" ? ":r" : "");
+
+// "CRO › SD › TL" from a posting string, for prose and buttons
+function deskLabel(target) {
+  const p = parsePosting(target);
+  if (!p) return target;
+  if (p.all) return "Everything";
+  return [deptMeta(p.dept).label, p.team ? teamMeta(p.team).label : null, posMeta(p.position).label]
+    .filter(Boolean).join(" › ");
+}
+const desksHtml = list => {
+  const l = (list || []).filter(Boolean);
+  return l.length ? `<span class="tags">${l.map(t => postingHtml(parsePosting(t))).join("")}</span>`
+                  : '<span class="ro">anyone</span>';
+};
+
+/* does a posting pattern cover a department/team, or match a step target */
+function patternMatches(p, target) {
+  const bits = lc(target).split(".").filter(Boolean);
+  if (bits.length < 2) return false;
+  const dept = bits[0], team = bits.length >= 3 ? bits[1] : "", position = bits[bits.length - 1];
+  if (p.dept !== dept || p.position !== position) return false;
+  if (team && p.team && p.team !== team) return false;
+  return true;
+}
+// everyone who could take a step on
+function staffForStep(step) {
+  if (!step || !step.to || !step.to.length) return state.data.people.slice();
+  return state.data.people.filter(person =>
+    (person.posts || []).some(post =>
+      step.to.some(t => patternMatches(
+        { dept: post.dept, team: post.team, position: post.position }, t))));
+}
+const myPostings = () => postingsOf(state.user.postings);
+// the departments and teams this person can write to, for new records
+function myWritableScopes() {
+  if (state.user.all) {
+    const out = [];
+    state.data.departments.forEach(d => {
+      out.push({ dept: d.dept, team: "" });
+      teamsIn(d.dept).forEach(t => out.push({ dept: d.dept, team: t.team }));
+    });
+    return out;
+  }
+  return myPostings().filter(p => !p.all && p.access === "write")
+    .map(p => ({ dept: p.dept, team: p.team }));
+}
+function canWriteScope(dept, team) {
+  if (!dept) return true;
+  if (state.user.all) return true;
+  return myPostings().some(p => !p.all && p.access === "write" && p.dept === lc(dept) &&
+    (!p.team || !team || p.team === lc(team)));
+}
 
 /* ---------- flow helpers ---------- */
 const flowStages = f => (f && f.stages) || [];
@@ -210,10 +298,21 @@ function usableFlows() {
   return state.data.flows.filter(f => f.active !== false && inScope(f));
 }
 
-/* ---------- scope: the rail's tag filter ---------- */
+/* ---------- scope: the rail's department / team lens ----------
+   "cro" is the whole department, "cro.sd" just that team. It narrows the
+   view; it never shows anything a posting does not already allow. */
 function inScope(r) {
   if (!state.scope) return true;
-  return tagsOf(r.tags).indexOf(state.scope) >= 0;
+  const bits = state.scope.split(".");
+  if (lc(r.dept) !== bits[0]) return false;
+  if (bits[1] && lc(r.team) && lc(r.team) !== bits[1]) return false;
+  return true;
+}
+function scopeLabel(s) {
+  if (!s) return "Whole org";
+  const bits = s.split(".");
+  const d = deptMeta(bits[0]).label;
+  return bits[1] ? d + " › " + teamMeta(bits[1]).label : d;
 }
 
 /* ---------- toast ---------- */
@@ -238,8 +337,10 @@ const SPEC = {
       { key: "phone", label: "Phone", type: "text" },
       { key: "city", label: "City", type: "text" },
       { key: "owner", label: "Owner", type: "person" },
-      { key: "tags", label: "Tags", type: "tags", full: true,
-        hint: "Tags decide who else can see this. No tag means only you and admins." },
+      { key: "scope", label: "Belongs to", type: "scope", full: true,
+        hint: "The department, and the team inside it, that this belongs to. That is what decides who can reach it. Leave it blank and only you and admins can." },
+      { key: "tags", label: "Client", type: "tags", full: true,
+        hint: "A label only — which client this is for. It grants nobody anything." },
       { key: "notes", label: "Notes", type: "textarea", full: true }
     ]
   },
@@ -253,7 +354,8 @@ const SPEC = {
       { key: "phone", label: "Phone", type: "text" },
       { key: "status", label: "Status", type: "select", list: "contactStatus" },
       { key: "owner", label: "Owner", type: "person" },
-      { key: "tags", label: "Tags", type: "tags", full: true },
+      { key: "scope", label: "Belongs to", type: "scope", full: true },
+      { key: "tags", label: "Client", type: "tags", full: true },
       { key: "notes", label: "Notes", type: "textarea", full: true }
     ]
   },
@@ -267,7 +369,8 @@ const SPEC = {
       { key: "contactId", label: "Contact", type: "contact" },
       { key: "closeDate", label: "Expected close", type: "date" },
       { key: "owner", label: "Owner", type: "person" },
-      { key: "tags", label: "Tags", type: "tags", full: true },
+      { key: "scope", label: "Belongs to", type: "scope", full: true },
+      { key: "tags", label: "Client", type: "tags", full: true },
       { key: "notes", label: "Notes", type: "textarea", full: true }
     ]
   },
@@ -285,8 +388,9 @@ const SPEC = {
         options: [{ value: "", label: "Nothing" }, { value: "Companies", label: "Company" },
                   { value: "Contacts", label: "Contact" }, { value: "Deals", label: "Deal" }] },
       { key: "linkId", label: "Which one", type: "link" },
-      { key: "tags", label: "Tags", type: "tags", full: true,
-        hint: "Tags pick the flow and the badges. They do not let anyone see the task — only the people on it can do that." },
+      { key: "scope", label: "Belongs to", type: "scope", full: true,
+        hint: "Which department and team this task is for. It picks the flow and the desks — it does not let anyone see the task. Only the people on it can." },
+      { key: "tags", label: "Client", type: "tags", full: true },
       { key: "watchers", label: "Watchers", type: "people", full: true,
         hint: "Watchers can see the task and follow it, but cannot change it unless it is handed to them." },
       { key: "notes", label: "Notes", type: "textarea", full: true }
@@ -341,12 +445,13 @@ async function reload() {
   state.data = {
     companies: r.companies || [], contacts: r.contacts || [], deals: r.deals || [],
     tasks: r.tasks || [], flows: r.flows || [], flowlog: r.flowlog || [],
-    time: r.time || [], tags: r.tags || [], badges: r.badges || [],
+    time: r.time || [], tags: r.tags || [],
+    departments: r.departments || [], teams: r.teams || [], positions: r.positions || [],
     lists: r.lists || {}, people: r.people || []
   };
   state.running = r.running || null;
   // a scope tag that no longer exists would silently hide everything
-  if (state.scope && !state.data.tags.some(t => t.tag === state.scope)) setScope("");
+  if (state.scope && !state.data.departments.some(d => d.dept === state.scope.split(".")[0])) setScope("");
   sync("ok", "Synced");
   paint();
   if (state.view === "admin") loadAdmin();
@@ -432,7 +537,9 @@ function wire() {
 
   $("btnNewUser").onclick = () => editUser(null);
   $("btnNewTag").onclick = () => editTag(null);
-  $("btnNewBadge").onclick = () => editBadge(null);
+  $("btnNewDept").onclick = () => editOrg("Departments", null);
+  $("btnNewTeam").onclick = () => editOrg("Teams", null);
+  $("btnNewPos").onclick  = () => editOrg("Positions", null);
   $("btnRunStop").onclick = stopTimer;
   $("btnRunOpen").onclick = () => {
     if (!state.running) return;
@@ -463,8 +570,14 @@ document.addEventListener("click", async e => {
   const tg = e.target.closest("[data-tagedit]");
   if (tg) { e.stopPropagation(); return editTag(state.data.tags.find(x => x.tag === tg.dataset.tagedit) || null); }
 
-  const bg = e.target.closest("[data-badgeedit]");
-  if (bg) { e.stopPropagation(); return editBadge(state.data.badges.find(x => x.badge === bg.dataset.badgeedit) || null); }
+  const org = e.target.closest("[data-org]");
+  if (org) {
+    e.stopPropagation();
+    const kind = org.dataset.org, key = org.dataset.key;
+    const src = { Departments: state.data.departments, Teams: state.data.teams, Positions: state.data.positions }[kind];
+    const col = { Departments: "dept", Teams: "team", Positions: "position" }[kind];
+    return editOrg(kind, (src || []).find(x => x[col] === key) || null);
+  }
 
   const fwd = e.target.closest("[data-forward]");
   if (fwd) { e.stopPropagation(); return forward(fwd.dataset.task, fwd.dataset.forward); }
@@ -497,9 +610,10 @@ function renderRail() {
   $("meAv").textContent = initials(state.user.name);
   $("meName").textContent = state.user.name;
   $("meRole").textContent = state.user.role === "admin" ? "Administrator"
-    : state.user.all ? "All tags" : ((state.user.read || []).join(", ") || "No tags");
-  $("brandSub").textContent = state.scope ? tagMeta(state.scope).label : "all departments";
-  $("scopeVal").textContent = state.scope ? tagMeta(state.scope).label : "All tags";
+    : state.user.all ? "Everything"
+    : (myPostings().map(p => deskLabel(postingText(p))).join(" · ") || "No posting");
+  $("brandSub").textContent = state.scope ? scopeLabel(state.scope) : "whole org";
+  $("scopeVal").textContent = scopeLabel(state.scope);
 
   const wrap = $("navGroups");
   wrap.innerHTML = "";
@@ -536,7 +650,7 @@ function go(id) {
 
 function renderCrumbs() {
   const label = (NAV.flatMap(g => g.items).find(i => i.id === state.view) || {}).label || "";
-  const scope = state.scope ? tagMeta(state.scope).label : "All tags";
+  const scope = scopeLabel(state.scope);
   $("crumbs").innerHTML =
     `<span>${esc(scope)}</span><span class="sep">›</span><b>${esc(label)}</b>`;
 }
@@ -558,19 +672,24 @@ function setScope(tag) {
 }
 
 function openScopePicker() {
-  const opts = [{ tag: "", label: "All tags", colour: "#8b98a6" }].concat(state.data.tags);
+  const rows = [`<button data-s="" class="${!state.scope ? "on" : ""}" style="--c:#8b98a6">Whole org</button>`];
+  state.data.departments.forEach(d => {
+    rows.push(`<button data-s="${esc(d.dept)}" class="${state.scope === d.dept ? "on" : ""}" style="--c:${esc(d.colour)}">${esc(d.label)}</button>`);
+    teamsIn(d.dept).forEach(t => {
+      const k = d.dept + "." + t.team;
+      rows.push(`<button data-s="${esc(k)}" class="${state.scope === k ? "on" : ""}" style="--c:${esc(t.colour)}">${esc(d.label)} › ${esc(t.label)}</button>`);
+    });
+  });
   modal({
     title: "Scope",
-    body: `<div class="field"><div class="hint" style="margin:0 0 10px">Narrows every view to one tag — your department, a client, a team. It does not change what you are allowed to see.</div></div>` +
-          `<div class="tagpick" id="scopePick">` + opts.map(o =>
-            `<button data-tag="${esc(o.tag)}" class="${state.scope === o.tag ? "on" : ""}" style="--c:${esc(o.colour)}">${esc(o.label)}</button>`
-          ).join("") + `</div>`,
+    body: `<div class="hint" style="margin:0 0 11px">Narrows every view to one department or team. It is a lens — it never shows you anything your postings do not already allow.</div>` +
+          `<div class="tagpick" id="scopePick">${rows.join("")}</div>`,
     hideSave: true,
     after: () => {
       $("scopePick").onclick = e => {
-        const b = e.target.closest("button[data-tag]");
+        const b = e.target.closest("button[data-s]");
         if (!b) return;
-        setScope(b.dataset.tag);
+        setScope(b.dataset.s);
         closeModal();
       };
     }
@@ -751,7 +870,7 @@ function renderTasks() {
     sel("f_who", peopleOpts("Anyone"), filt("tasks", "who")) +
     sel("f_flow", [{ value: "", label: "Any flow" }, { value: "@none", label: "No flow" }]
       .concat(flows.map(f => ({ value: f.id, label: f.name }))), filt("tasks", "flow")) +
-    (state.scope ? "" : sel("f_tag", [{ value: "", label: "All tags" }]
+    (state.scope ? "" : sel("f_tag", [{ value: "", label: "Any client" }]
       .concat(state.data.tags.map(t => ({ value: t.tag, label: t.label }))), filt("tasks", "tag"))) +
     `<span class="spacer"></span>` +
     `<div class="seg" id="taskMode">
@@ -787,7 +906,8 @@ function renderTaskGrid(rows) {
     { h: "Due", sort: "dueDate", get: r =>
         `<span class="${dueClass(r.dueDate, r.status === "Done")}">${esc(fmtDay(r.dueDate)) || "—"}</span>` },
     { h: "Assignee", sort: "assignee", get: r => whoHtml(r.assignee) },
-    { h: "Tags", get: r => tagsHtml(r.tags) },
+    { h: "Belongs to", cls: "nw", get: r => scopeHtml(r.dept, r.team) },
+    { h: "Client", get: r => tagsHtml(r.tags) },
     { h: "Logged", cls: "num", get: r => fmtMins(taskMinutes(r.id)) },
     { h: "", cls: "act", get: r => {
         const live = state.running && state.running.taskId === r.id;
@@ -906,7 +1026,7 @@ function renderFlows() {
     const n = state.data.tasks.filter(t => t.flowId === f.id).length;
     b.innerHTML = `<div class="fn">${esc(f.name)}</div><div class="fm">` +
       `<span>${flowStages(f).length} stages</span><span>·</span><span>${n} task${n === 1 ? "" : "s"}</span>` +
-      (tagsOf(f.tags).length ? ` ${tagsOf(f.tags).map(tagHtml).join("")}` : "") + `</div>`;
+      (f.dept ? ` ${scopeHtml(f.dept, f.team)}` : "") + `</div>`;
     b.onclick = () => selectFlow(f.id);
     list.appendChild(b);
   });
@@ -928,65 +1048,78 @@ function loadDraft(id) {
   const f = flowOf(id);
   if (!f) { state.flowDraft = null; return; }
   state.flowDraft = JSON.parse(JSON.stringify({
-    id: f.id, name: f.name, tags: f.tags, description: f.description,
+    id: f.id, name: f.name, dept: f.dept || "", team: f.team || "", description: f.description,
     active: f.active !== false, stages: flowStages(f), _canWrite: f._canWrite
   }));
 }
 function dirty() {
   const f = flowOf(state.flowSel);
   if (!f || !state.flowDraft) return false;
-  const a = JSON.stringify({ n: f.name, t: tagsOf(f.tags).join(","), d: f.description, a: f.active !== false, s: flowStages(f) });
-  const d = state.flowDraft;
-  const b = JSON.stringify({ n: d.name, t: tagsOf(d.tags).join(","), d: d.description, a: d.active, s: d.stages });
-  return a !== b;
+  const shape = x => JSON.stringify({
+    n: x.name, dp: lc(x.dept), tm: lc(x.team), d: x.description,
+    a: x.active !== false, s: x.stages || flowStages(x)
+  });
+  return shape(f) !== shape(state.flowDraft);
 }
 
 function newFlow() {
-  const mine = myWritableTags();
-  if (!mine.length) { toast("You need a writable tag before you can own a flow.", "err"); return; }
+  const mine = myWritableScopes();
+  if (!mine.length) { toast("You need a posting you can write to before you can own a flow.", "err"); return; }
+  const depts = state.data.departments.filter(d => state.user.all || mine.some(m => m.dept === d.dept));
+  if (!depts.length) { toast("No department you can write to.", "err"); return; }
+
+  const draft = { dept: depts[0].dept, team: "" };
+  const paintScope = () => {
+    const teams = teamsIn(draft.dept);
+    $("nfScope").innerHTML =
+      `<select class="inp" id="nfDept">` + depts.map(d =>
+        `<option value="${esc(d.dept)}"${d.dept === draft.dept ? " selected" : ""}>${esc(d.label)}</option>`).join("") + `</select>` +
+      (teams.length ? `<select class="inp" id="nfTeam"><option value="">Whole department</option>` +
+        teams.map(t => `<option value="${esc(t.team)}"${t.team === draft.team ? " selected" : ""}>${esc(t.label)}</option>`).join("") +
+        `</select>` : "");
+    $("nfDept").addEventListener("input", e => { draft.dept = e.target.value; draft.team = ""; paintScope(); });
+    const t = $("nfTeam"); if (t) t.addEventListener("input", e => { draft.team = e.target.value; });
+  };
+
   modal({
     title: "New flow",
-    body: `<div class="field"><label>Name</label><input class="inp" id="nfName" placeholder="Client request"></div>` +
-          `<div class="field"><label>Tags</label><div class="tagpick" id="nfTags"></div>` +
-          `<div class="hint">Who the flow belongs to. Only people with one of these tags will see it.</div></div>` +
+    body: `<div class="field"><label>Name</label><input class="inp" id="nfName" placeholder="CRO request"></div>` +
+          `<div class="field"><label>Belongs to</label><div class="scopefield" id="nfScope"></div>` +
+          `<div class="hint">The department this flow serves. Only people posted there will see it.</div></div>` +
           `<div class="field"><label>Start from</label>` +
           sel("nfTemplate", [
-            { value: "standard", label: "A five-step delivery flow (you can edit it)" },
-            { value: "blank", label: "Blank — I'll build the stages myself" }
+            { value: "standard", label: "A five-desk flow for this department (you can edit it)" },
+            { value: "blank", label: "Blank — I'll build the steps myself" }
           ], "standard") + `</div>`,
     after: () => {
-      const chosen = [mine[0]];
-      const paintTags = () => {
-        $("nfTags").innerHTML = state.data.tags.map(t => {
-          const on = chosen.indexOf(t.tag) >= 0;
-          return `<button data-t="${esc(t.tag)}" class="${on ? "on" : ""}" style="--c:${esc(t.colour)}"` +
-                 `${canWriteTag(t.tag) ? "" : " disabled"}>${esc(t.label)}</button>`;
-        }).join("");
-      };
-      paintTags();
-      $("nfTags").onclick = e => {
-        const b = e.target.closest("button[data-t]"); if (!b) return;
-        const i = chosen.indexOf(b.dataset.t);
-        if (i >= 0) chosen.splice(i, 1); else chosen.push(b.dataset.t);
-        paintTags();
-      };
+      paintScope();
       $("nfName").focus();
       modalSave(async () => {
         const name = $("nfName").value.trim();
         if (!name) throw new Error("Give the flow a name.");
-        if (!chosen.length) throw new Error("Pick at least one tag you can write to.");
-        const b = k => state.data.badges.some(x => x.badge === k) ? [k] : [];
+
+        // address the template's desks to positions that actually exist
+        const has = k => state.data.positions.some(p => p.position === k);
+        const at = (team, pos) => has(pos) ? [draft.dept + (team ? "." + team : "") + "." + pos] : [];
+        const teams = teamsIn(draft.dept).map(t => t.team);
+        const doers = teams.length
+          ? teams.reduce((acc, t) => acc.concat(at(t, "tl"), at(t, "member")), [])
+          : at("", "member");
+
         const stages = $("nfTemplate").value === "blank" ? [
-          { key: "step-1", name: "Raised", colour: STAGE_COLOURS[1], badges: [], next: [],
+          { key: "step-1", name: "Raised", colour: STAGE_COLOURS[1], to: [], next: [],
             slaHours: 4, entry: true, approval: false, terminal: false }
         ] : [
-          { key: "raised",  name: "Raised",    colour: "#60a5fa", badges: b("csm").concat(b("dm"), b("ops")), next: ["triage"], slaHours: 4,  entry: true },
-          { key: "triage",  name: "Triage",    colour: "#2dd4bf", badges: b("cro-manager"), next: ["work", "review"], slaHours: 8 },
-          { key: "work",    name: "In hand",   colour: "#fbbf24", badges: b("cro-sd").concat(b("cro-gd"), b("cro-cs")), next: ["review"], slaHours: 48 },
-          { key: "review",  name: "Review",    colour: "#a78bfa", badges: b("cro-manager"), next: ["work", "done"], slaHours: 12, approval: true },
-          { key: "done",    name: "Delivered", colour: "#34d399", badges: [], next: [], slaHours: 0, terminal: true }
+          { key: "raised", name: "Raised",    colour: "#60a5fa", to: at("", "member"), next: ["triage"], slaHours: 4, entry: true },
+          { key: "triage", name: "Triage",    colour: "#2dd4bf", to: at("", "manager"), next: ["work", "review"], slaHours: 8 },
+          { key: "work",   name: "In hand",   colour: "#fbbf24", to: doers, next: ["review"], slaHours: 48 },
+          { key: "review", name: "Review",    colour: "#a78bfa", to: at("", "manager"), next: ["work", "done"], slaHours: 12, approval: true },
+          { key: "done",   name: "Delivered", colour: "#34d399", to: [], next: [], slaHours: 0, terminal: true }
         ];
-        const r = await API.save("Flows", { name, tags: chosen.join(", "), description: "", active: true, stages });
+
+        const r = await API.save("Flows", {
+          name, dept: draft.dept, team: draft.team, tags: "", description: "", active: true, stages
+        });
         state.data.flows.push(r.record);
         state.flowSel = r.record.id;
         loadDraft(r.record.id);
@@ -1023,7 +1156,7 @@ function renderCanvas() {
        </div>
      </div>
      <div class="cvmeta">
-       <div><div class="mk">Tags — who this flow belongs to</div><div class="tagpick" id="fTags"></div></div>
+       <div><div class="mk">Belongs to</div><div class="scopefield" id="fScope"></div></div>
        <div><div class="mk">On this flow</div><div style="font-size:12.5px">${
          state.data.tasks.filter(t => t.flowId === d.id).length} task(s)</div></div>
      </div>
@@ -1044,22 +1177,24 @@ function renderCanvas() {
 
 function paintFlowTags() {
   const d = state.flowDraft;
-  const box = $("fTags");
+  const box = $("fScope");
   if (!box) return;
-  const chosen = tagsOf(d.tags);
-  box.innerHTML = state.data.tags.map(t => {
-    const on = chosen.indexOf(t.tag) >= 0;
-    return `<button data-t="${esc(t.tag)}" class="${on ? "on" : ""}" style="--c:${esc(t.colour)}"` +
-           `${(!d._canWrite || (!canWriteTag(t.tag) && !on)) ? " disabled" : ""}>${esc(t.label)}</button>`;
-  }).join("") || '<span class="ro">no tags defined</span>';
-  box.onclick = e => {
-    const b = e.target.closest("button[data-t]"); if (!b) return;
-    const list = tagsOf(d.tags);
-    const i = list.indexOf(b.dataset.t);
-    if (i >= 0) list.splice(i, 1); else list.push(b.dataset.t);
-    d.tags = list.join(", ");
-    paintFlowTags();
-  };
+  const ro = !d._canWrite;
+  const teams = teamsIn(d.dept);
+  box.innerHTML =
+    `<select class="inp" id="fDept" ${ro ? "disabled" : ""}>` +
+      `<option value="">— unassigned —</option>` +
+      state.data.departments.map(x =>
+        `<option value="${esc(x.dept)}"${lc(d.dept) === x.dept ? " selected" : ""}>${esc(x.label)}</option>`).join("") +
+    `</select>` +
+    (teams.length ? `<select class="inp" id="fTeam" ${ro ? "disabled" : ""}>` +
+      `<option value="">Whole department</option>` +
+      teams.map(t => `<option value="${esc(t.team)}"${lc(d.team) === t.team ? " selected" : ""}>${esc(t.label)}</option>`).join("") +
+      `</select>` : "");
+  if (ro) return;
+  $("fDept").addEventListener("input", e => { d.dept = e.target.value; d.team = ""; paintFlowTags(); });
+  const t = $("fTeam");
+  if (t) t.addEventListener("input", e => { d.team = e.target.value; });
 }
 
 function paintChain() {
@@ -1112,12 +1247,15 @@ function stageNode(s, i, ro) {
     `</div>` +
     `<input class="sname" value="${esc(s.name)}" ${ro ? "disabled" : ""}>` +
 
-    `<div class="sgroup"><div class="sgl">Handled by</div><div class="tagpick tiny" data-badges>` +
-      (state.data.badges.length ? state.data.badges.map(b => {
-        const on = (s.badges || []).indexOf(b.badge) >= 0;
-        return `<button data-b="${esc(b.badge)}" class="${on ? "on" : ""}" style="--c:${esc(b.colour)}" ${ro ? "disabled" : ""}>${esc(b.label)}</button>`;
-      }).join("") : '<span class="ro">no badges yet</span>') +
-    `</div></div>` +
+    `<div class="sgroup"><div class="sgl">Handled by</div>` +
+      `<div class="targets" data-to>` +
+        ((s.to || []).length
+          ? (s.to || []).map(t => `<span class="target">${postingHtml(parsePosting(t)) || esc(t)}` +
+              (ro ? "" : `<button class="x" data-rm="${esc(t)}" title="Remove">×</button>`) + `</span>`).join("")
+          : '<span class="ro">nobody yet</span>') +
+      `</div>` +
+      (ro ? "" : `<button class="btn xs" data-addto style="margin-top:6px">+ Desk</button>`) +
+    `</div>` +
 
     `<div class="sgroup"><div class="sgl">Can be sent to</div><div class="tagpick tiny" data-next>` +
       (others.length ? others.map(o => {
@@ -1150,13 +1288,12 @@ function stageNode(s, i, ro) {
     }
   });
   card.querySelector("[data-sla]").addEventListener("input", e => { s.slaHours = Math.max(0, Number(e.target.value) || 0); });
-  card.querySelector("[data-badges]").onclick = e => {
-    const b = e.target.closest("button[data-b]"); if (!b) return;
-    s.badges = s.badges || [];
-    const at = s.badges.indexOf(b.dataset.b);
-    if (at >= 0) s.badges.splice(at, 1); else s.badges.push(b.dataset.b);
+  card.querySelector("[data-to]").onclick = e => {
+    const x = e.target.closest("button[data-rm]"); if (!x) return;
+    s.to = (s.to || []).filter(t => t !== x.dataset.rm);
     paintChain();
   };
+  card.querySelector("[data-addto]").onclick = () => addDesk(s);
   card.querySelector("[data-next]").onclick = e => {
     const b = e.target.closest("button[data-n]"); if (!b) return;
     const list = goesTo.slice();
@@ -1197,6 +1334,55 @@ function stageNode(s, i, ro) {
   return card;
 }
 
+/* Add a desk to a step: a department, optionally a team, and a position.
+   That triple is the posting the step is addressed to. */
+function addDesk(step) {
+  const depts = state.data.departments;
+  if (!depts.length) { toast("Add a department in Admin first.", "err"); return; }
+  const positions = state.data.positions;
+  if (!positions.length) { toast("Add a position in Admin first.", "err"); return; }
+
+  const draft = { dept: depts[0].dept, team: "", position: positions[0].position };
+  const paint = () => {
+    const teams = teamsIn(draft.dept);
+    $("adBody").innerHTML =
+      `<div class="frow">` +
+        `<div class="field"><label>Department</label><select class="inp" id="adDept">` +
+          depts.map(d => `<option value="${esc(d.dept)}"${d.dept === draft.dept ? " selected" : ""}>${esc(d.label)}</option>`).join("") +
+        `</select></div>` +
+        `<div class="field"><label>Team</label><select class="inp" id="adTeam"${teams.length ? "" : " disabled"}>` +
+          `<option value="">Whole department</option>` +
+          teams.map(t => `<option value="${esc(t.team)}"${t.team === draft.team ? " selected" : ""}>${esc(t.label)}</option>`).join("") +
+        `</select></div>` +
+        `<div class="field"><label>Position</label><select class="inp" id="adPos">` +
+          positions.map(p => `<option value="${esc(p.position)}"${p.position === draft.position ? " selected" : ""}>${esc(p.label)}</option>`).join("") +
+        `</select></div>` +
+      `</div>` +
+      `<div class="hint">This step will be handed to <b>${esc(postingText(draft))}</b> — ` +
+      `${staffForStep({ to: [postingText(draft)] }).map(p => esc(p.name)).join(", ") || "nobody holds that posting yet"}.` +
+      `<br>Leaving the team as "whole department" matches that position in any team.</div>`;
+    $("adDept").addEventListener("input", e => { draft.dept = e.target.value; draft.team = ""; paint(); });
+    const t = $("adTeam"); if (t) t.addEventListener("input", e => { draft.team = e.target.value; paint(); });
+    $("adPos").addEventListener("input", e => { draft.position = e.target.value; paint(); });
+  };
+
+  modal({
+    title: "Who handles this step",
+    saveLabel: "Add",
+    body: `<div id="adBody"></div>`,
+    after: () => {
+      paint();
+      modalSave(async () => {
+        const key = postingText(draft);
+        step.to = step.to || [];
+        if (step.to.indexOf(key) < 0) step.to.push(key);
+        closeModal();
+        paintChain();
+      });
+    }
+  });
+}
+
 function move(from, to) {
   const d = state.flowDraft;
   if (to < 0 || to >= d.stages.length || from === to) return;
@@ -1211,7 +1397,7 @@ function addStage(at) {
   const stage = {
     key: "step-" + Date.now().toString(36).slice(-4),
     name: "Step " + n, colour: STAGE_COLOURS[(n - 1) % STAGE_COLOURS.length],
-    badges: [], next: [], slaHours: 24, entry: false, approval: false, terminal: false
+    to: [], next: [], slaHours: 24, entry: false, approval: false, terminal: false
   };
   d.stages.splice(at, 0, stage);
   paintChain();
@@ -1242,10 +1428,10 @@ async function saveFlow() {
   $("fSave").disabled = true;
   try {
     const r = await API.save("Flows", {
-      id: d.id, name: d.name.trim(), tags: d.tags, description: d.description,
+      id: d.id, name: d.name.trim(), dept: d.dept, team: d.team, description: d.description,
       active: d.active, stages: d.stages.map(s => ({
         key: s.key, name: s.name, colour: s.colour, slaHours: s.slaHours,
-        badges: s.badges || [], next: s.next || [],
+        to: s.to || [], next: s.next || [],
         entry: !!s.entry, approval: !!s.approval, terminal: !!s.terminal
       }))
     });
@@ -1307,7 +1493,7 @@ function pickHandover(taskId, stepKey) {
   const f = flowOf(t && t.flowId);
   const step = f && stageOf(f, stepKey);
   if (!step) return;
-  const pool = wearersOfStep(step);
+  const pool = staffForStep(step);
 
   modal({
     title: "Hand over to " + step.name,
@@ -1315,7 +1501,7 @@ function pickHandover(taskId, stepKey) {
     body:
       `<div class="field"><label>Who takes it on</label><select class="inp" id="hoWho">` +
       pool.map(p => `<option value="${esc(p.userId)}">${esc(p.name)}</option>`).join("") +
-      `</select><div class="hint">${badgesHtml(step.badges)} — only people wearing this can be handed the step.</div></div>` +
+      `</select><div class="hint">${desksHtml(step.to)} — only people holding one of these can be handed the step.</div></div>` +
       `<div class="field"><label>Note (optional)</label><input class="inp" id="hoNote" placeholder="What they need to know"></div>`,
     after: () => modalSave(async () => {
       const who = $("hoWho").value;
@@ -1344,7 +1530,7 @@ function renderDeals() {
   const mode = state.mode.deals;
   setBar("Deals", null,
     sel("f_who", peopleOpts("Any owner"), filt("deals", "who")) +
-    (state.scope ? "" : sel("f_tag", [{ value: "", label: "All tags" }]
+    (state.scope ? "" : sel("f_tag", [{ value: "", label: "Any client" }]
       .concat(state.data.tags.map(t => ({ value: t.tag, label: t.label }))), filt("deals", "tag"))) +
     `<span class="spacer"></span>` +
     `<div class="seg" id="dealMode">
@@ -1416,7 +1602,8 @@ function renderDealGrid(rows) {
     { h: "Value", cls: "num", sort: "value", get: r => money(r.value) },
     { h: "Close", sort: "closeDate", get: r => esc(fmtDay(r.closeDate)) || "—" },
     { h: "Owner", sort: "owner", get: r => whoHtml(r.owner) },
-    { h: "Tags", get: r => tagsHtml(r.tags) },
+    { h: "Belongs to", cls: "nw", get: r => scopeHtml(r.dept, r.team) },
+    { h: "Client", get: r => tagsHtml(r.tags) },
     { h: "", cls: "act", get: r => `<span class="rowacts">${editBtn("Deals", r)}</span>` }
   ], rows, {
     key: "deals", blankTitle: "No deals", blank: "Create one with + New.",
@@ -1430,7 +1617,7 @@ function renderDealGrid(rows) {
 function renderContacts() {
   setBar("Contacts", null,
     sel("f_status", listOpts("contactStatus", "Any status"), filt("contacts", "status")) +
-    (state.scope ? "" : sel("f_tag", [{ value: "", label: "All tags" }]
+    (state.scope ? "" : sel("f_tag", [{ value: "", label: "Any client" }]
       .concat(state.data.tags.map(t => ({ value: t.tag, label: t.label }))), filt("contacts", "tag"))));
   ["status", "tag"].forEach(k => onFilt("contacts", k));
 
@@ -1452,7 +1639,8 @@ function renderContacts() {
     { h: "Phone", get: r => esc(r.phone) || "—" },
     { h: "Status", sort: "status", get: r => pillHtml("contactStatus", r.status) },
     { h: "Owner", sort: "owner", get: r => whoHtml(r.owner) },
-    { h: "Tags", get: r => tagsHtml(r.tags) },
+    { h: "Belongs to", cls: "nw", get: r => scopeHtml(r.dept, r.team) },
+    { h: "Client", get: r => tagsHtml(r.tags) },
     { h: "", cls: "act", get: r => `<span class="rowacts">${editBtn("Contacts", r)}</span>` }
   ], rows, { key: "contacts", blankTitle: "No contacts", blank: "Create one with + New.",
              onRow: r => openDrawer("Contacts", r.id) });
@@ -1461,7 +1649,7 @@ function renderContacts() {
 
 function renderCompanies() {
   setBar("Companies", null,
-    state.scope ? "" : sel("f_tag", [{ value: "", label: "All tags" }]
+    state.scope ? "" : sel("f_tag", [{ value: "", label: "Any client" }]
       .concat(state.data.tags.map(t => ({ value: t.tag, label: t.label }))), filt("companies", "tag")));
   onFilt("companies", "tag");
 
@@ -1478,7 +1666,8 @@ function renderCompanies() {
     { h: "Contacts", cls: "num", get: r => String(state.data.contacts.filter(c => c.companyId === r.id).length) },
     { h: "Deals", cls: "num", get: r => String(state.data.deals.filter(d => d.companyId === r.id).length) },
     { h: "Owner", sort: "owner", get: r => whoHtml(r.owner) },
-    { h: "Tags", get: r => tagsHtml(r.tags) },
+    { h: "Belongs to", cls: "nw", get: r => scopeHtml(r.dept, r.team) },
+    { h: "Client", get: r => tagsHtml(r.tags) },
     { h: "", cls: "act", get: r => `<span class="rowacts">${editBtn("Companies", r)}</span>` }
   ], rows, { key: "companies", blankTitle: "No companies", blank: "Create one with + New.",
              onRow: r => openDrawer("Companies", r.id) });
@@ -1742,7 +1931,7 @@ function openDrawer(entity, id) {
         `<div class="dk">At this desk</div>` +
         (cur
           ? `<div class="deskrow"><span class="pill" style="--c:${esc(cur.colour)}"><span class="dot"></span>${esc(cur.name)}</span>` +
-            badgesHtml(cur.badges) + `</div>` +
+            desksHtml(cur.to) + `</div>` +
             `<div class="deskwho">${row.assignee ? whoHtml(row.assignee) : '<span class="ro">nobody yet</span>'}` +
             `<span class="ls"> · ${esc(fmtAge(stageAge(row)))} here` +
             (cur.slaHours ? ` of ${cur.slaHours}h` : "") +
@@ -1757,13 +1946,13 @@ function openDrawer(entity, id) {
         if (onward.length) {
           html += `<div class="dk" style="margin-top:12px">${cur ? "Forward to" : "Send it in at"}</div><div class="fwdrow">` +
             onward.map(s => {
-              const pool = wearersOfStep(s);
-              const who = s.badges.length
+              const pool = staffForStep(s);
+              const who = (s.to || []).length
                 ? (pool.length === 1 ? personName(pool[0].userId) : pool.length + " people")
                 : "anyone";
               return `<button class="fwdbtn" style="--c:${esc(s.colour)}" data-forward="${esc(s.key)}" data-task="${esc(row.id)}">` +
                      `<span class="fn">${esc(s.name)} →</span>` +
-                     `<span class="fb">${s.badges.map(b => esc(badgeMeta(b).label)).join(", ") || "no badge"} · ${esc(who)}</span>` +
+                     `<span class="fb">${(s.to || []).map(t => esc(deskLabel(t))).join(", ") || "anyone"} · ${esc(who)}</span>` +
                      `</button>`;
             }).join("") + `</div>`;
         } else if (cur && cur.terminal) {
@@ -1786,6 +1975,9 @@ function openDrawer(entity, id) {
                  `<span class="spacer"></span>` +
                  `<span class="ls" title="sent by ${esc(personName(l.byUser))}">${esc(fmtDay(l.enteredAt.slice(0, 10)))} ${esc(fmtClock(l.enteredAt))}</span>` +
                  `<b style="font-size:11.5px">${l.exitedAt ? esc(fmtAge(l.minutes)) : esc(fmtAge(stageAge(row)))}</b></div>` +
+                 (l.actingAs
+                   ? `<div class="standin">${esc(personName(l.byUser))} sent this standing in as ${esc(l.actingAs)}</div>`
+                   : "") +
                  (l.note ? `<div class="ls" style="padding:0 0 8px 2px">“${esc(l.note)}”</div>` : "");
         }).join("") + `</div>`;
       }
@@ -1927,7 +2119,7 @@ function addWatcher(taskId) {
     title: "Add a watcher",
     saveLabel: "Add",
     body: `<div class="field"><label>Who</label><select class="inp" id="awWho">` +
-      pool.map(p => `<option value="${esc(p.userId)}">${esc(p.name)}${p.badges && p.badges.length ? " — " + esc(p.badges.map(b => badgeMeta(b).label).join(", ")) : ""}</option>`).join("") +
+      pool.map(p => `<option value="${esc(p.userId)}">${esc(p.name)}${p.posts && p.posts.length ? " — " + esc(p.posts.map(q => deskLabel(postingText(q))).join(", ")) : ""}</option>`).join("") +
       `</select><div class="hint">A watcher can see the task and follow where it goes, but cannot change it unless it is handed to them.</div></div>`,
     after: () => modalSave(async () => {
       await setWatcher(taskId, $("awWho").value, false);
@@ -1984,6 +2176,9 @@ function openEditor(entity, id) {
 
   const draft = {};
   spec.fields.forEach(f => { draft[f.key] = row ? (row[f.key] ?? "") : ""; });
+  // "scope" is a pair of real columns, not a field of its own
+  draft.dept = row ? (row.dept || "") : "";
+  draft.team = row ? (row.team || "") : "";
   if (!row) {
     draft.owner = state.user.userId;
     if (entity === "Tasks") {
@@ -1993,10 +2188,11 @@ function openEditor(entity, id) {
     }
     if (entity === "Deals") draft.stage = ((state.data.lists.stage || [{}])[0] || {}).value || "Lead";
     if (entity === "Contacts") draft.status = ((state.data.lists.contactStatus || [{}])[0] || {}).value || "";
-    // a new record should not be born private
-    const mine = myWritableTags();
-    const preferred = state.scope && canWriteTag(state.scope) ? state.scope : mine[0];
-    if (preferred) draft.tags = preferred;
+    /* A new record should not be born private: put it where the person is
+       standing, or at the first place they can write to. */
+    const here = state.scope ? { dept: state.scope.split(".")[0], team: state.scope.split(".")[1] || "" } : null;
+    const pick = (here && canWriteScope(here.dept, here.team)) ? here : myWritableScopes()[0];
+    if (pick) { draft.dept = pick.dept; draft.team = pick.team || ""; }
   }
   editing = { entity, id: row ? row.id : "", draft, wasFlow: row ? row.flowId : "" };
 
@@ -2065,6 +2261,37 @@ function fieldNode(f) {
       pick.appendChild(b);
     });
     wrap.appendChild(pick);
+    if (f.hint) wrap.appendChild(el("div", "hint", esc(f.hint)));
+    return wrap;
+  }
+
+  if (f.type === "scope") {
+    const box = el("div", "scopefield");
+    const dSel = el("select", "inp");
+    const writable = myWritableScopes();
+    const deptOk = d => state.user.all || writable.some(w => w.dept === d);
+    dSel.innerHTML = `<option value="">— nobody but me —</option>` +
+      state.data.departments.filter(d => deptOk(d.dept) || d.dept === lc(editing.draft.dept))
+        .map(d => `<option value="${esc(d.dept)}"${lc(editing.draft.dept) === d.dept ? " selected" : ""}>${esc(d.label)}</option>`).join("");
+    dSel.addEventListener("input", () => {
+      editing.draft.dept = dSel.value;
+      editing.draft.team = "";
+      paintFields();
+    });
+    box.appendChild(dSel);
+
+    const teams = teamsIn(editing.draft.dept);
+    if (teams.length) {
+      const tSel = el("select", "inp");
+      const teamOk = t => state.user.all ||
+        writable.some(w => w.dept === lc(editing.draft.dept) && (!w.team || w.team === t));
+      tSel.innerHTML = `<option value="">Whole department</option>` +
+        teams.filter(t => teamOk(t.team) || lc(editing.draft.team) === t.team)
+          .map(t => `<option value="${esc(t.team)}"${lc(editing.draft.team) === t.team ? " selected" : ""}>${esc(t.label)}</option>`).join("");
+      tSel.addEventListener("input", () => { editing.draft.team = tSel.value; });
+      box.appendChild(tSel);
+    }
+    wrap.appendChild(box);
     if (f.hint) wrap.appendChild(el("div", "hint", esc(f.hint)));
     return wrap;
   }
@@ -2142,6 +2369,7 @@ async function saveEditor() {
     if (f.required && !String(editing.draft[f.key] || "").trim()) throw new Error(f.label + " is required.");
   }
   const record = Object.assign({}, editing.draft);
+  delete record.scope;                       // dept and team carry it instead
   if (editing.id) record.id = editing.id;
   // moving off a flow, or onto a different one, drops the old stage
   if (editing.entity === "Tasks" && record.flowId !== editing.wasFlow) record.stage = "";
@@ -2231,45 +2459,70 @@ async function loadAdmin() {
 }
 
 function renderAdmin() {
-  setBar("Admin", `${state.users.length} people · ${state.data.badges.length} badges · ${state.data.tags.length} tags`, "");
+  setBar("Admin", `${state.users.length} people · ${state.data.departments.length} departments · ` +
+    `${state.data.teams.length} teams · ${state.data.positions.length} positions`, "");
+
   grid($("gUsers"), [
     { h: "User ID", get: r => `<code>${esc(r.userId)}</code>` },
     { h: "Name", get: r => esc(r.name) || "—" },
-    { h: "Email", get: r => esc(r.email) || "—" },
     { h: "Role", get: r => r.role === "admin" ? `<span class="pill" style="--c:#2dd4bf"><span class="dot"></span>admin</span>` : "user" },
-    { h: "Tags", cls: "wrap", get: r => {
-        const list = String(r.tags || "").split(/[,;]/).map(s => s.trim()).filter(Boolean);
-        if (!list.length) return '<span class="ro">none</span>';
-        return `<span class="tags">` + list.map(t => {
-          const ro = /:r$/.test(t), base = t.replace(/:r$/, "");
-          if (base === "*") return `<span class="tag" style="--c:#2dd4bf">everything</span>`;
-          return tagHtml(base) + (ro ? ' <span class="ro">read</span>' : "");
-        }).join(" ") + `</span>`;
-      } },
-    { h: "Badges", cls: "wrap", get: r => {
-        const list = tagsOf(r.badges);
-        return list.length ? `<span class="tags">${list.map(badgeHtml).join("")}</span>` : '<span class="ro">none</span>';
-      } },
-    { h: "Active", get: r => r.active
+    { h: "Postings — what they can reach", cls: "wrap", get: r => postingsHtml(r.postings) },
+    { h: "Client tags", cls: "wrap", get: r => tagsOf(r.tags).length ? tagsHtml(r.tags) : '<span class="ro">—</span>' },
+    { h: "Active", cls: "nw", get: r => r.active
         ? `<span class="pill" style="--c:#34d399"><span class="dot"></span>on</span>`
         : `<span class="pill" style="--c:#f87171"><span class="dot"></span>off</span>` },
     { h: "", cls: "act", get: r => `<span class="rowacts"><button class="btn xs" data-user="${esc(r.userId)}">Edit</button></span>` }
   ], state.users, { key: "users", blankTitle: "No users" });
 
-  grid($("gBadges"), [
-    { h: "Badge", get: r => badgeHtml(r.badge) },
-    { h: "Key", get: r => `<code>${esc(r.badge)}</code>` },
-    { h: "Label", get: r => esc(r.label) },
-    { h: "Worn by", cls: "wrap", get: r => {
-        const who = wearers(r.badge);
-        return who.length ? who.map(p => esc(p.name)).join(", ") : '<span class="ro">nobody yet</span>';
+  const orgBtn = (kind, key) =>
+    `<span class="rowacts"><button class="btn xs" data-org="${esc(kind)}" data-key="${esc(key)}">Edit</button></span>`;
+
+  grid($("gDepts"), [
+    { h: "Department", get: r => deptHtml(r.dept) },
+    { h: "Key", get: r => `<code>${esc(r.dept)}</code>` },
+    { h: "Teams", cls: "wrap", get: r => {
+        const t = teamsIn(r.dept);
+        return t.length ? t.map(x => esc(x.label)).join(", ") : '<span class="ro">none</span>';
       } },
-    { h: "Steps", cls: "num", get: r => String(state.data.flows.reduce((s, f) =>
-        s + flowStages(f).filter(st => (st.badges || []).indexOf(r.badge) >= 0).length, 0)) },
-    { h: "", cls: "act", get: r => `<span class="rowacts"><button class="btn xs" data-badgeedit="${esc(r.badge)}">Edit</button></span>` }
-  ], state.data.badges, {
-    key: "badges", blankTitle: "No badges",
-    blank: "Badges are the desks a task passes between — CSM, CRO Manager, CRO SD. Add one with + Badge."
+    { h: "People", cls: "num", get: r => String(state.data.people.filter(p =>
+        (p.posts || []).some(q => q.dept === r.dept)).length) },
+    { h: "", cls: "act", get: r => orgBtn("Departments", r.dept) }
+  ], state.data.departments, {
+    key: "depts", blankTitle: "No departments",
+    blank: "A department is the top of the org chart — CSM, Ops, CRO."
+  });
+
+  grid($("gTeams"), [
+    { h: "Team", get: r => `<span class="badge" style="--c:${esc(r.colour)}">${esc(r.label)}</span>` },
+    { h: "Inside", cls: "nw", get: r => deptHtml(r.dept) },
+    { h: "Key", get: r => `<code>${esc(r.dept)}.${esc(r.team)}</code>` },
+    { h: "People", cls: "num", get: r => String(state.data.people.filter(p =>
+        (p.posts || []).some(q => q.dept === r.dept && q.team === r.team)).length) },
+    { h: "", cls: "act", get: r => orgBtn("Teams", r.team) }
+  ], state.data.teams, {
+    key: "teams", blankTitle: "No teams",
+    blank: "Teams sit inside a department — CRO has CS, GD and SD."
+  });
+
+  grid($("gPositions"), [
+    { h: "Position", get: r => `<span class="pos" style="--c:${esc(r.colour)}">${esc(r.label)}</span>` },
+    { h: "Key", get: r => `<code>${esc(r.position)}</code>` },
+    { h: "Rank", cls: "num", get: r => String(r.rank) },
+    { h: "Acts as", cls: "nw", get: r => {
+        if (r.acts <= r.rank) return '<span class="ro">itself</span>';
+        const up = state.data.positions.filter(p => p.rank === r.acts)[0];
+        return `<span class="pos" style="--c:${esc((up || r).colour)}">${esc(up ? up.label : "rank " + r.acts)}</span>` +
+               ` <span class="ro">flagged when used</span>`;
+      } },
+    { h: "Access", cls: "nw", get: r => r.access === "read"
+        ? `<span class="pill" style="--c:#94a3b8"><span class="dot"></span>read</span>`
+        : `<span class="pill" style="--c:#34d399"><span class="dot"></span>write</span>` },
+    { h: "People", cls: "num", get: r => String(state.data.people.filter(p =>
+        (p.posts || []).some(q => q.position === r.position)).length) },
+    { h: "", cls: "act", get: r => orgBtn("Positions", r.position) }
+  ], state.data.positions, {
+    key: "positions", blankTitle: "No positions",
+    blank: "Manager, TL, Next Inline, Member. Rank decides what counts as a TL-level act."
   });
 
   grid($("gTags"), [
@@ -2300,37 +2553,45 @@ function editUser(row) {
           `<option value="user"${d.role !== "admin" ? " selected" : ""}>User</option>` +
           `<option value="admin"${d.role === "admin" ? " selected" : ""}>Admin</option></select></div>` +
       `</div>` +
-      `<div class="field"><label>Tags</label><input class="inp" id="auTags" value="${esc(d.tags)}" placeholder="sales, support:r">` +
-        `<div class="hint"><code>tag</code> read + write · <code>tag:r</code> read only · <code>*</code> everything.<br>` +
-        `Known tags: ${state.data.tags.map(t => `<code>${esc(t.tag)}</code>`).join(", ") || "none yet"}</div></div>` +
-      `<div class="field"><label>Badges</label><div class="tagpick" id="auBadges"></div>` +
-        `<div class="hint">The desks this person staffs. A flow step addressed to a badge can only be handed to someone wearing it.</div></div>` +
+      `<div class="field"><label>Postings — what they can reach</label>` +
+        `<div class="postlist" id="auPosts"></div>` +
+        `<div id="auBuild"></div>` +
+        `<button class="btn xs" type="button" id="auAddPost" style="margin-top:7px">+ Posting</button>` +
+        `<div class="hint">A posting is a department, optionally a team inside it, and a position. ` +
+        `The position decides read or write; you can override that here for one person.</div></div>` +
+      `<div class="field"><label>Client tags</label><input class="inp" id="auTags" value="${esc(d.tags)}" placeholder="bm, rw">` +
+        `<div class="hint">Labels only, for filtering. Known: ${state.data.tags.map(t => `<code>${esc(t.tag)}</code>`).join(", ") || "none yet"}</div></div>` +
       `<div class="frow">` +
         `<div class="field"><label>${row ? "New password (blank = leave it)" : "Password *"}</label><input class="inp" id="auPw" type="text" autocomplete="off"></div>` +
         `<div class="field"><label>Active</label><select class="inp" id="auActive">` +
           `<option value="1"${d.active ? " selected" : ""}>On</option><option value="0"${!d.active ? " selected" : ""}>Off</option></select></div>` +
       `</div>`,
     after: () => {
-      const picked = tagsOf(d.badges);
-      const paintBadges = () => {
-        $("auBadges").innerHTML = state.data.badges.length
-          ? state.data.badges.map(b =>
-              `<button type="button" data-b="${esc(b.badge)}" class="${picked.indexOf(b.badge) >= 0 ? "on" : ""}" ` +
-              `style="--c:${esc(b.colour)}">${esc(b.label)}</button>`).join("")
-          : '<span class="ro">no badges defined yet</span>';
+      const picked = postingsOf(d.postings).map(postingText);
+      const paintPosts = () => {
+        $("auPosts").innerHTML = picked.length
+          ? picked.map(p =>
+              `<span class="target">${p === "*" ? '<span class="badge" style="--c:#2dd4bf">Everything</span>' : postingHtml(parsePosting(p))}` +
+              `<button type="button" class="x" data-rm="${esc(p)}" title="Remove">×</button></span>`).join("")
+          : '<span class="ro">none — they will reach nothing</span>';
       };
-      paintBadges();
-      $("auBadges").onclick = e => {
-        const b = e.target.closest("button[data-b]"); if (!b) return;
-        const i = picked.indexOf(b.dataset.b);
-        if (i >= 0) picked.splice(i, 1); else picked.push(b.dataset.b);
-        paintBadges();
+      paintPosts();
+      $("auPosts").onclick = e => {
+        const b = e.target.closest("button[data-rm]"); if (!b) return;
+        const i = picked.indexOf(b.dataset.rm);
+        if (i >= 0) picked.splice(i, 1);
+        paintPosts();
       };
+      $("auAddPost").onclick = () => buildPosting($("auBuild"), p => {
+        if (picked.indexOf(p) < 0) picked.push(p);
+        paintPosts();
+      });
+
       modalSave(async () => {
       const record = {
         userId: row ? row.userId : $("auId").value.trim(),
         name: $("auName").value.trim(), email: $("auEmail").value.trim(),
-        role: $("auRole").value, tags: $("auTags").value, badges: picked.join(", "),
+        role: $("auRole").value, tags: $("auTags").value, postings: picked.join(", "),
         active: $("auActive").value === "1", password: $("auPw").value
       };
       if (!record.userId) throw new Error("A user ID is required.");
@@ -2343,49 +2604,143 @@ function editUser(row) {
   });
 }
 
-function editBadge(row) {
-  const d = row || { badge: "", label: "", colour: STAGE_COLOURS[6], order: state.data.badges.length };
+
+/* Build one posting inline — a nested dialog would throw away whatever the
+   user editor already has in it. Calls back with "cro.sd.tl" or "cro.sd.tl:r". */
+function buildPosting(host, done) {
+  if (!state.data.departments.length) { toast("Add a department first.", "err"); return; }
+  if (!state.data.positions.length) { toast("Add a position first.", "err"); return; }
+  const d = {
+    dept: state.data.departments[0].dept, team: "",
+    position: state.data.positions[0].position, override: ""
+  };
+
+  const paint = () => {
+    const teams = teamsIn(d.dept);
+    const pos = posMeta(d.position);
+    host.innerHTML =
+      `<div class="buildrow">` +
+        `<select class="inp" id="bpDept">` + state.data.departments.map(x =>
+          `<option value="${esc(x.dept)}"${x.dept === d.dept ? " selected" : ""}>${esc(x.label)}</option>`).join("") + `</select>` +
+        `<select class="inp" id="bpTeam"${teams.length ? "" : " disabled"}>` +
+          `<option value="">Whole department</option>` + teams.map(t =>
+          `<option value="${esc(t.team)}"${t.team === d.team ? " selected" : ""}>${esc(t.label)}</option>`).join("") + `</select>` +
+        `<select class="inp" id="bpPos">` + state.data.positions.map(p =>
+          `<option value="${esc(p.position)}"${p.position === d.position ? " selected" : ""}>${esc(p.label)}</option>`).join("") + `</select>` +
+        `<select class="inp" id="bpAcc">` +
+          `<option value=""${!d.override ? " selected" : ""}>${esc(pos.access)} (from position)</option>` +
+          `<option value="write"${d.override === "write" ? " selected" : ""}>write (exception)</option>` +
+          `<option value="read"${d.override === "read" ? " selected" : ""}>read (exception)</option>` +
+        `</select>` +
+        `<button class="btn pri xs" type="button" id="bpAdd">Add</button>` +
+        `<button class="btn xs" type="button" id="bpNo">Cancel</button>` +
+      `</div>` +
+      `<div class="hint">→ <code>${esc(postingText(d))}</code> · ` +
+      (d.team ? `just the ${esc(teamMeta(d.team).label)} team` : `every team in ${esc(deptMeta(d.dept).label)}`) +
+      (pos.acts > pos.rank ? ` · stands in at the rank above, and those acts get flagged` : "") + `</div>`;
+
+    $("bpDept").addEventListener("input", e => { d.dept = e.target.value; d.team = ""; paint(); });
+    const t = $("bpTeam"); if (t) t.addEventListener("input", e => { d.team = e.target.value; paint(); });
+    $("bpPos").addEventListener("input", e => { d.position = e.target.value; paint(); });
+    $("bpAcc").addEventListener("input", e => { d.override = e.target.value; paint(); });
+    $("bpAdd").onclick = () => { done(postingText(d)); host.innerHTML = ""; };
+    $("bpNo").onclick = () => { host.innerHTML = ""; };
+  };
+  paint();
+}
+
+/* One editor for all three org catalogues — they differ only in a field or
+   two, and keeping them together keeps the rules in one place. */
+function editOrg(kind, row) {
+  const cfg = {
+    Departments: { col: "dept",     noun: "department", src: () => state.data.departments, ph: "cro",  phl: "CRO" },
+    Teams:       { col: "team",     noun: "team",       src: () => state.data.teams,       ph: "sd",   phl: "SD" },
+    Positions:   { col: "position", noun: "position",   src: () => state.data.positions,   ph: "tl",   phl: "TL" }
+  }[kind];
+  if (!cfg) return;
+
+  const d = row || { label: "", colour: STAGE_COLOURS[6], order: cfg.src().length,
+                     dept: (state.data.departments[0] || {}).dept || "",
+                     rank: 10, acts: 10, access: "write" };
+  const key = row ? row[cfg.col] : "";
+
+  let extra = "";
+  if (kind === "Teams") {
+    extra = `<div class="field"><label>Inside which department *</label><select class="inp" id="eoDept">` +
+      state.data.departments.map(x =>
+        `<option value="${esc(x.dept)}"${x.dept === d.dept ? " selected" : ""}>${esc(x.label)}</option>`).join("") +
+      `</select></div>`;
+  }
+  if (kind === "Positions") {
+    const rankOpts = [{ value: "10", label: "10 — team member" }, { value: "15", label: "15 — stands in for a TL" },
+                      { value: "20", label: "20 — TL" }, { value: "30", label: "30 — Manager" }];
+    extra =
+      `<div class="frow">` +
+        `<div class="field"><label>Rank</label><select class="inp" id="eoRank">` +
+          rankOpts.map(o => `<option value="${esc(o.value)}"${String(d.rank) === o.value ? " selected" : ""}>${esc(o.label)}</option>`).join("") +
+        `</select><div class="hint">Where they stand in the org. Anything needing rank 20 or more is a TL-level act.</div></div>` +
+        `<div class="field"><label>Acts at rank</label><select class="inp" id="eoActs">` +
+          rankOpts.map(o => `<option value="${esc(o.value)}"${String(d.acts) === o.value ? " selected" : ""}>${esc(o.label)}</option>`).join("") +
+        `</select><div class="hint">Set this above their own rank and they can stand in — their TL-level acts get recorded as such. Next Inline is rank 15 acting at 20.</div></div>` +
+      `</div>` +
+      `<div class="field"><label>Default access</label><select class="inp" id="eoAccess">` +
+        `<option value="write"${d.access !== "read" ? " selected" : ""}>Write — can change what they reach</option>` +
+        `<option value="read"${d.access === "read" ? " selected" : ""}>Read — can look, not change</option>` +
+      `</select><div class="hint">A person's posting can override this with <code>:r</code> or <code>:w</code>.</div></div>`;
+  }
+
   modal({
-    title: row ? "Edit badge" : "New badge",
+    title: (row ? "Edit " : "New ") + cfg.noun,
     body:
       `<div class="frow">` +
-        `<div class="field"><label>Key *</label><input class="inp" id="abKey" value="${esc(d.badge)}" ${row ? "disabled" : ""} placeholder="cro-sd" autocapitalize="none" spellcheck="false"></div>` +
-        `<div class="field"><label>Label</label><input class="inp" id="abLabel" value="${esc(d.label)}" placeholder="CRO SD"></div>` +
+        `<div class="field"><label>Key *</label><input class="inp" id="eoKey" value="${esc(key)}" ${row ? "disabled" : ""} placeholder="${esc(cfg.ph)}" autocapitalize="none" spellcheck="false">` +
+          `<div class="hint">Lowercase, no spaces. It is what appears in a posting.</div></div>` +
+        `<div class="field"><label>Label</label><input class="inp" id="eoLabel" value="${esc(d.label)}" placeholder="${esc(cfg.phl)}"></div>` +
       `</div>` +
+      extra +
       `<div class="frow">` +
-        `<div class="field"><label>Colour</label><input class="inp" id="abColour" value="${esc(d.colour)}"></div>` +
-        `<div class="field"><label>Order</label><input class="inp" id="abOrder" type="number" value="${esc(d.order)}"></div>` +
+        `<div class="field"><label>Colour</label><input class="inp" id="eoColour" value="${esc(d.colour)}"></div>` +
+        `<div class="field"><label>Order</label><input class="inp" id="eoOrder" type="number" value="${esc(d.order)}"></div>` +
       `</div>` +
-      `<div class="field"><div class="swatches" id="abSwatch">` +
+      `<div class="field"><div class="swatches" id="eoSwatch">` +
         STAGE_COLOURS.map(c => `<button type="button" class="swatch" data-c="${c}" style="background:${c};width:22px;height:22px"></button>`).join("") +
-      `</div><div class="hint">A badge is a desk, not a person: give it to everyone who staffs that desk in Admin ▸ People.</div></div>` +
-      (row ? `<div class="hint">Worn by ${wearers(row.badge).map(p => esc(p.name)).join(", ") || "nobody yet"}.</div>` : ""),
+      `</div></div>`,
     after: () => {
-      $("abSwatch").onclick = e => {
+      $("eoSwatch").onclick = e => {
         const b = e.target.closest("button[data-c]"); if (!b) return;
-        $("abColour").value = b.dataset.c;
+        $("eoColour").value = b.dataset.c;
       };
       modalSave(async () => {
         const record = {
-          badge: row ? row.badge : $("abKey").value.trim().toLowerCase(),
-          label: $("abLabel").value.trim(), colour: $("abColour").value.trim(),
-          order: Number($("abOrder").value) || 0
+          label: $("eoLabel").value.trim(),
+          colour: $("eoColour").value.trim(),
+          order: Number($("eoOrder").value) || 0
         };
-        if (!record.badge) throw new Error("A key is required.");
-        await API.saveBadge(record);
-        closeModal(); toast("Badge saved", "ok");
+        record[cfg.col] = row ? key : $("eoKey").value.trim().toLowerCase();
+        if (!record[cfg.col]) throw new Error("A key is required.");
+        if (kind === "Teams") record.dept = $("eoDept").value;
+        if (kind === "Positions") {
+          record.rank = Number($("eoRank").value) || 10;
+          record.acts = Number($("eoActs").value) || record.rank;
+          record.access = $("eoAccess").value;
+          if (record.acts < record.rank) throw new Error("Acting rank cannot be below their own rank.");
+        }
+        await API.saveOrg(kind, record);
+        closeModal();
+        toast(cfg.noun.charAt(0).toUpperCase() + cfg.noun.slice(1) + " saved", "ok");
         await reload(); await loadAdmin();
       });
     },
     onDelete: row ? async () => {
-      const used = state.data.flows.reduce((s, f) =>
-        s + flowStages(f).filter(st => (st.badges || []).indexOf(row.badge) >= 0).length, 0);
+      const used = state.data.people.filter(p => (p.posts || []).some(q => q[cfg.col] === key)).length;
       if (!confirm(used
-        ? `${used} flow step(s) are addressed to "${row.label}". Remove the badge anyway? Those steps will have nobody to hand to.`
-        : `Remove the badge "${row.label}"?`)) return;
+        ? `${used} person/people are posted to "${d.label}". Remove it anyway? Their postings stop matching.`
+        : `Remove the ${cfg.noun} "${d.label}"?`)) return;
       try {
-        await API.saveBadge({ badge: row.badge, remove: true });
-        closeModal(); toast("Badge removed", "ok");
+        const rec = { remove: true };
+        rec[cfg.col] = key;
+        await API.saveOrg(kind, rec);
+        closeModal(); toast("Removed", "ok");
         await reload(); await loadAdmin();
       } catch (err) { $("modalErr").textContent = err.message; }
     } : null
@@ -2454,10 +2809,11 @@ function openSettings() {
         `<button class="btn sm" id="sgUrl">Change</button></div>` +
       `<div class="lrow"><div><div>My password</div><div class="ls">Change it for this account</div></div><span class="spacer"></span>` +
         `<button class="btn sm" id="sgPw">Change</button></div>` +
-      `<div class="lrow"><div><div>My tags</div><div class="ls" id="sgTags"></div></div></div>`,
+      `<div class="lrow"><div><div>My postings</div><div class="ls" id="sgTags"></div></div></div>`,
     after: () => {
       $("sgTags").innerHTML = state.user.all ? "everything (*)"
-        : ((state.user.read || []).map(t => tagHtml(t) + (canWriteTag(t) ? "" : ' <span class="ro">read</span>')).join(" ") || "none");
+        : (postingsHtml(state.user.postings) +
+           (state.user.standsIn ? ' <span class="ro">— you can stand in above your own rank; those acts are recorded</span>' : ""));
       $("sgTheme").onclick = e => {
         const b = e.target.closest("button[data-theme]"); if (!b) return;
         document.documentElement.dataset.theme = b.dataset.theme;

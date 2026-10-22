@@ -302,6 +302,48 @@ table.grid{width:100%;min-width:1060px;border-collapse:separate;border-spacing:0
   background:color-mix(in srgb, var(--c,#8b98a6) 12%, #fff);
   color:color-mix(in srgb, var(--c,#8b98a6) 80%, #000);
 }
+/* a position chip — Manager, TL, Next Inline */
+.pos{
+  display:inline-flex;align-items:center;padding:1px 7px;border-radius:4px;
+  font-size:10.5px;font-weight:700;letter-spacing:.02em;white-space:nowrap;
+  background:color-mix(in srgb, var(--c,#8b98a6) 18%, transparent);
+  color:var(--c,#8b98a6);
+}
+[data-theme="light"] .pos{
+  background:color-mix(in srgb, var(--c,#8b98a6) 14%, #fff);
+  color:color-mix(in srgb, var(--c,#8b98a6) 82%, #000);
+}
+/* a whole posting: CRO › SD › TL */
+.posting{
+  display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:99px;
+  font-size:10.5px;white-space:nowrap;
+  background:color-mix(in srgb, var(--c,#8b98a6) 13%, transparent);
+  border:1px solid color-mix(in srgb, var(--c,#8b98a6) 34%, transparent);
+  color:var(--ink);
+}
+.posting b{font-weight:700;color:var(--c,#8b98a6)}
+.posting .sep,.tags .sep{color:var(--ink-faint);font-size:9px}
+[data-theme="light"] .posting{background:color-mix(in srgb, var(--c,#8b98a6) 10%, #fff)}
+
+/* the dept/team pair of selects used wherever something "belongs to" */
+.scopefield{display:flex;gap:8px;flex-wrap:wrap}
+.scopefield select{flex:1 1 140px;min-width:0}
+
+/* step targets and a person's postings, each removable */
+.targets,.postlist{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.target{display:inline-flex;align-items:center;gap:2px}
+.target .x{color:var(--ink-faint);font-size:13px;line-height:1;padding:0 3px;border-radius:50%}
+.target .x:hover{color:var(--red);background:var(--red-bg)}
+.buildrow{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px}
+.buildrow select{flex:1 1 120px;min-width:0;padding:5px 7px;font-size:11.5px}
+
+/* "sent standing in as TL" */
+.standin{
+  font-size:10.5px;color:var(--amber);padding:0 0 7px 2px;
+  display:flex;align-items:center;gap:5px;
+}
+.standin::before{content:"\25B2";font-size:8px}
+
 .ro{font-size:10.5px;color:var(--ink-faint)}
 .late{color:var(--red);font-weight:600}
 .soon{color:var(--amber);font-weight:600}

@@ -10,3 +10,6 @@ desktop.ini
 # local tooling — nothing here is built, these are plain static files
 node_modules/
 .claude/
+
+# local test harness, never shipped
+__stub.js

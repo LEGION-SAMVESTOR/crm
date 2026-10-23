@@ -20,7 +20,7 @@
  *    Lists      — pipeline stages, statuses, priorities
  *    Companies  — accounts
  *    Contacts   — people, each optionally attached to a company
- *    Deals      — pipeline
+ *    Messages   — the chat thread on each task
  *    Tasks      — work items, optionally attached to any of the above
  *    Flows      — the routing maps you draw in the Flow builder
  *    FlowLog    — one row per desk a task passed through: who held it, how long
@@ -38,10 +38,13 @@
  *
  * TASKS ARE DIFFERENT — a task is not visible by tag. It is visible only to:
  *     the person who created it,
- *     anyone on its watchers list,
+ *     anyone on its observers list,
  *     whoever it is assigned to now,
- *     and anyone who has held it at some point (its participants),
- *   plus admins. A task's department only decides which desks it can go to.
+ *     and anyone who has held it before — but only while it is still at a
+ *       desk their own team staffs. Once their TL signs it off and it moves
+ *       beyond, it drops off their list, and returns if handed back to them.
+ *   Admins see everything. A task's department only decides which desks it
+ *   can go to.
  *
  * THE ORG CHART IS THE ACCESS MODEL. Three catalogues:
  *     Departments   CSM, DM, Ops, CRO
@@ -78,7 +81,7 @@
 /* Bump this when HEAD changes and the next request will migrate the sheet by
    itself — new tabs created, new columns appended, nothing already there
    moved. Nobody has to run anything. */
-var SCHEMA_VERSION = "2026-10-23.1";
+var SCHEMA_VERSION = "2026-10-23.2";
 
 var SESSION_DAYS = 30;     // how long a login lasts
 var TIME_DAYS    = 180;    // how much of the time log the app pulls down
@@ -93,16 +96,19 @@ var HEAD = {
   Lists:       ["type", "value", "label", "colour", "order"],
   Companies:   ["id", "name", "owner", "dept", "team", "tags", "website", "phone", "city", "notes", "createdAt", "updatedAt"],
   Contacts:    ["id", "name", "companyId", "title", "email", "phone", "owner", "dept", "team", "tags", "status", "notes", "createdAt", "updatedAt"],
-  Deals:       ["id", "title", "companyId", "contactId", "value", "stage", "owner", "dept", "team", "tags", "closeDate", "notes", "createdAt", "updatedAt"],
-  Tasks:       ["id", "title", "notes", "linkType", "linkId", "assignee", "owner", "dept", "team", "tags", "status", "priority", "dueDate", "flowId", "stage", "watchers", "participants", "createdAt", "updatedAt"],
+  Tasks:       ["id", "title", "notes", "linkType", "linkId", "assignee", "owner", "dept", "team", "tags", "status", "priority", "dueDate", "flowId", "stage", "observers", "participants", "createdAt", "updatedAt"],
+  Messages:    ["id", "taskId", "userId", "at", "text", "editedAt"],
   Flows:       ["id", "name", "dept", "team", "tags", "description", "stages", "active", "owner", "createdAt", "updatedAt"],
   FlowLog:     ["id", "taskId", "flowId", "stage", "assignee", "enteredAt", "exitedAt", "minutes", "byUser", "actingAs", "note"],
   TimeLog:     ["id", "taskId", "userId", "date", "start", "end", "minutes", "note", "createdAt"],
   Activity:    ["at", "userId", "actingAs", "entity", "entityId", "action", "detail"]
 };
 
-// the entities the generic save/remove endpoints will accept
-var ENTITIES = ["Companies", "Contacts", "Deals", "Tasks", "Flows"];
+/* The entities the generic save/remove endpoints will accept.
+   Deals is deliberately not here: a sales pipeline does not fit how this
+   agency works, so the app no longer serves it. The Deals tab is left alone
+   in the spreadsheet rather than deleted, in case there is anything in it. */
+var ENTITIES = ["Companies", "Contacts", "Tasks", "Flows"];
 
 // Tags are client labels now, nothing more.
 var DEFAULT_TAGS = [
@@ -135,12 +141,15 @@ var DEFAULT_POSITIONS = [
   ["manager",     "Manager",     30, 30, "write", "#2dd4bf", 0],
   ["tl",          "TL",          20, 20, "write", "#60a5fa", 1],
   ["next-inline", "Next Inline", 15, 20, "write", "#a78bfa", 2],
-  ["member",      "Member",      10, 10, "write", "#8b98a6", 3],
-  ["observer",    "Observer",    10, 10, "read",  "#94a3b8", 4]
+  ["member",      "Member",      10, 10, "write", "#8b98a6", 3]
 ];
 
 // anything needing this rank or above is a TL-level act
 var TL_RANK = 20;
+
+// the status that parks a task: it clears the deadline, and leaving it again
+// means setting a new one
+var PARKED_STATUS = "Confirmations Sent";
 
 var DEFAULT_LISTS = [
   ["stage", "Lead",        "#8b98a6", 0],
@@ -150,10 +159,11 @@ var DEFAULT_LISTS = [
   ["stage", "Won",         "#3ddc84", 4],
   ["stage", "Lost",        "#ff5c69", 5],
 
-  ["taskStatus", "Todo",        "#ffc24b", 0],
-  ["taskStatus", "In Progress", "#5ea8ff", 1],
-  ["taskStatus", "Blocked",     "#ff5c69", 2],
-  ["taskStatus", "Done",        "#3ddc84", 3],
+  ["taskStatus", "Todo",               "#ffc24b", 0],
+  ["taskStatus", "In Progress",        "#5ea8ff", 1],
+  ["taskStatus", "Confirmations Sent", "#f472b6", 2],
+  ["taskStatus", "Blocked",            "#ff5c69", 3],
+  ["taskStatus", "Done",               "#3ddc84", 4],
 
   ["priority", "Low",    "#8b98a6", 0],
   ["priority", "Normal", "#5ea8ff", 1],
@@ -224,7 +234,9 @@ function handle(body) {
       case "remove":      return apiRemove(body);
       case "forward":     return apiForward(body);
       case "advance":     return apiForward(body);   // the old name still works
-      case "watch":       return apiWatch(body);
+      case "watch":       return apiWatch(body);   // adds or removes an observer
+      case "messages":    return apiMessages(body);
+      case "postMessage": return apiPostMessage(body);
       case "timerStart":  return apiTimerStart(body);
       case "timerStop":   return apiTimerStop(body);
       case "timeSave":    return apiTimeSave(body);
@@ -485,25 +497,49 @@ function canWrite(user, record) {
    A task is only ever seen by the person who raised it, the people watching
    it, whoever holds it now, and whoever has held it along the way. Tags on a
    task say which flow and badges apply; they grant nobody sight of it. */
-function onTask(user, task) {
+function onTask(user, task, flow) {
   var me = user.userId.toLowerCase();
-  if (str(task.owner).toLowerCase() === me) return true;
-  if (str(task.assignee).toLowerCase() === me) return true;
-  if (tagList(task.watchers).indexOf(me) >= 0) return true;
-  if (tagList(task.participants).indexOf(me) >= 0) return true;
+  if (str(task.owner).toLowerCase() === me) return true;        // raised it
+  if (str(task.assignee).toLowerCase() === me) return true;     // holds it now
+  if (tagList(task.observers).indexOf(me) >= 0) return true;    // observing it
+  if (tagList(task.participants).indexOf(me) < 0) return false; // never touched it
+
+  /* Held it before. They follow it only as far as their own team's desk — in
+     practice, until their TL signs it off. Past that it drops off their list,
+     and comes back if it is handed to them again. Someone posted to the whole
+     department follows it anywhere in that department. */
+  return atOwnDesk(user, task, flow);
+}
+
+function atOwnDesk(user, task, flow) {
+  if (user.role === "admin" || user.postings.all) return true;
+  if (!flow) return true;                     // no flow, so nothing to pass beyond
+  var step = stepIn(flow, task.stage);
+  if (!step || !step.to.length) return true;  // nowhere in particular
+  for (var i = 0; i < user.postings.list.length; i++) {
+    var p = user.postings.list[i];
+    for (var j = 0; j < step.to.length; j++) {
+      var bits = String(step.to[j]).toLowerCase().split(".").filter(Boolean);
+      if (bits.length < 2) continue;
+      var dept = bits[0], team = bits.length >= 3 ? bits[1] : "";
+      if (p.dept !== dept) continue;
+      if (!p.team) return true;               // posted department-wide
+      if (p.team === team) return true;       // their own team's desk, TL included
+    }
+  }
   return false;
 }
 
-function canReadTask(user, task) {
+function canReadTask(user, task, flow) {
   if (user.role === "admin") return true;
-  return onTask(user, task);
+  return onTask(user, task, flow);
 }
 
 // Editing a task needs involvement too — plus whoever staffs the desk the task
 // is sitting at, so a desk can pick up what has been sent to it.
 function canWriteTask(user, task, flow) {
   if (user.role === "admin") return true;
-  if (!onTask(user, task)) return false;
+  if (!onTask(user, task, flow)) return false;
   var me = user.userId.toLowerCase();
   if (str(task.owner).toLowerCase() === me) return true;
   if (str(task.assignee).toLowerCase() === me) return true;
@@ -732,15 +768,16 @@ function apiBootstrap(body) {
     departments: readDepartments(),
     teams: readTeams(),
     positions: readPositions(),
+    parkedStatus: PARKED_STATUS,
     lists: readLists(),
     people: readPeople(),
     companies: [],
     contacts: [],
-    deals: [],
     tasks: [],
     flows: [],
     flowlog: [],
     time: [],
+    msgCounts: {},
     running: null
   };
 
@@ -762,7 +799,7 @@ function apiBootstrap(body) {
 
   // only tasks this person is actually involved in
   out.tasks = readObjects("Tasks")
-    .filter(function (r) { return str(r.id) && canReadTask(u, r); })
+    .filter(function (r) { return str(r.id) && canReadTask(u, r, flowById[str(r.flowId)]); })
     .map(function (r) {
       var o = cleanRecord("Tasks", r, u);
       o._canWrite = canWriteTask(u, r, flowById[str(r.flowId)]);
@@ -782,6 +819,13 @@ function apiBootstrap(body) {
       minutes: num(r.minutes), byUser: str(r.byUser), note: str(r.note)
     });
   });
+  // how many messages each visible task has, so the list can show it
+  readObjects("Messages").forEach(function (r) {
+    var t = str(r.taskId);
+    if (!str(r.id) || !visibleTasks[t]) return;
+    out.msgCounts[t] = (out.msgCounts[t] || 0) + 1;
+  });
+
   var since = isoDay(new Date(Date.now() - TIME_DAYS * 86400000));
 
   readObjects("TimeLog").forEach(function (r) {
@@ -985,7 +1029,18 @@ function apiSave(body) {
     record.updatedAt = nowIso();
 
     if (name === "Tasks") {
-      record.watchers = tagList(record.watchers).join(", ");
+      record.observers = tagList(record.observers).join(", ");
+
+      /* "Confirmations Sent" parks a task: there is no point holding a
+         deadline while you are waiting on someone else, so it clears. Coming
+         off it means naming a new one, otherwise the task quietly loses its
+         date for good. */
+      var wasParked = existing && str(existing.status) === PARKED_STATUS;
+      var nowParked = str(record.status) === PARKED_STATUS;
+      if (nowParked) record.dueDate = "";
+      else if (wasParked && !str(record.dueDate)) {
+        fail("Set a new deadline — this task has been parked since confirmations went out.", "needDue");
+      }
       // whoever raised it, whoever holds it and whoever touched it are always
       // participants — that is the only thing keeping the task visible to them
       record.participants = addTo(existing ? existing.participants : "",
@@ -1275,9 +1330,9 @@ function apiWatch(body) {
       if (str(rows[i].id) === str(body.taskId)) { existing = rows[i]; break; }
     }
     if (!existing) fail("No such task.");
-    if (!canReadTask(u, existing)) fail("You cannot see that task.", "forbidden");
+    if (!canReadTask(u, existing, findFlowQuiet(existing.flowId))) fail("You cannot see that task.", "forbidden");
 
-    var list = tagList(existing.watchers);
+    var list = tagList(existing.observers);
     var at = list.indexOf(who);
     if (body.remove) {
       if (at < 0) return { ok: true, task: taskOut(u, existing) };
@@ -1296,15 +1351,81 @@ function apiWatch(body) {
 
     var record = {};
     HEAD.Tasks.forEach(function (h) { record[h] = existing[h]; });
-    record.watchers = list.join(", ");
+    record.observers = list.join(", ");
     record.updatedAt = nowIso();
     writeRow("Tasks", existing._row, record);
-    logActivity(u, "Tasks", record.id, body.remove ? "unwatch" : "watch", who);
+    logActivity(u, "Tasks", record.id, body.remove ? "unobserve" : "observe", who);
     delete record._row;
     return { ok: true, task: taskOut(u, record) };
   } finally {
     lock.releaseLock();
   }
+}
+
+/* ========================================================================
+   TASK CHAT — one thread per task, visible to exactly whoever can see it
+   ======================================================================== */
+function taskFor(u, taskId) {
+  var rows = readObjects("Tasks");
+  for (var i = 0; i < rows.length; i++) {
+    if (str(rows[i].id) !== str(taskId)) continue;
+    if (!canReadTask(u, rows[i], findFlowQuiet(rows[i].flowId))) {
+      fail("You cannot see that task.", "forbidden");
+    }
+    return rows[i];
+  }
+  fail("No such task.");
+}
+
+function apiMessages(body) {
+  var u = auth(body.token);
+  taskFor(u, body.taskId);
+  var out = [];
+  readObjects("Messages").forEach(function (r) {
+    if (str(r.taskId) !== str(body.taskId) || !str(r.id)) return;
+    out.push({
+      id: str(r.id), taskId: str(r.taskId), userId: str(r.userId),
+      at: str(r.at), text: str(r.text), editedAt: str(r.editedAt)
+    });
+  });
+  out.sort(function (a, b) { return a.at < b.at ? -1 : a.at > b.at ? 1 : 0; });
+  return { ok: true, messages: out };
+}
+
+function apiPostMessage(body) {
+  var u = auth(body.token);
+  var task = taskFor(u, body.taskId);
+  var text = String(body.text || "").trim();
+  if (!text) fail("Nothing to send.");
+  if (text.length > 4000) fail("That message is too long.");
+
+  var row = {
+    id: newId("msg"), taskId: str(task.id), userId: u.userId,
+    at: nowIso(), text: text, editedAt: ""
+  };
+  appendObject("Messages", row);
+
+  /* Saying something puts you on the task: otherwise you could answer a
+     question and then lose sight of the reply. */
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var rows = readObjects("Tasks");
+    for (var i = 0; i < rows.length; i++) {
+      if (str(rows[i].id) !== str(task.id)) continue;
+      var before = tagList(rows[i].participants);
+      if (before.indexOf(u.userId.toLowerCase()) >= 0) break;
+      var record = {};
+      HEAD.Tasks.forEach(function (h) { record[h] = rows[i][h]; });
+      record.participants = addTo(record.participants, [u.userId]);
+      writeRow("Tasks", rows[i]._row, record);
+      break;
+    }
+  } finally {
+    lock.releaseLock();
+  }
+
+  return { ok: true, message: row };
 }
 
 function taskOut(u, task) {
@@ -1340,11 +1461,33 @@ function findTask(u, taskId) {
   var rows = readObjects("Tasks");
   for (var i = 0; i < rows.length; i++) {
     if (str(rows[i].id) === str(taskId)) {
-      if (!canReadTask(u, rows[i])) fail("You cannot see that task.", "forbidden");
+      if (!canReadTask(u, rows[i], findFlowQuiet(rows[i].flowId))) fail("You cannot see that task.", "forbidden");
       return rows[i];
     }
   }
   fail("No such task.");
+}
+
+/* Starting a timer moves the task to In Progress. A task that is finished, or
+   parked waiting on confirmations, is left where it is — someone clocking a
+   few minutes against it should not quietly restart it. */
+function markInProgress(u, taskId) {
+  var rows = readObjects("Tasks");
+  for (var i = 0; i < rows.length; i++) {
+    if (str(rows[i].id) !== str(taskId)) continue;
+    var status = str(rows[i].status);
+    if (status === "In Progress" || status === "Done" || status === PARKED_STATUS) return null;
+    var record = {};
+    HEAD.Tasks.forEach(function (h) { record[h] = rows[i][h]; });
+    record.status = "In Progress";
+    record.updatedAt = nowIso();
+    writeRow("Tasks", rows[i]._row, record);
+    logActivity(u, "Tasks", record.id, "status", "In Progress (timer started)");
+    delete record._row;
+    record._canWrite = true;
+    return record;
+  }
+  return null;
 }
 
 function myRunning(userId) {
@@ -1381,7 +1524,10 @@ function apiTimerStart(body) {
       note: str(body.note), createdAt: now.toISOString()
     };
     appendObject("TimeLog", row);
-    return { ok: true, running: timeRow(row), stopped: stopped };
+
+    // starting the clock is what "in progress" means — no need to say it twice
+    var task = markInProgress(u, body.taskId);
+    return { ok: true, running: timeRow(row), stopped: stopped, task: task };
   } finally {
     lock.releaseLock();
   }
@@ -1747,6 +1893,15 @@ function carryOverOldAccess() {
     return dept + (team ? "." + team : "") + "." + position;
   }
 
+  // watchers became observers when the position of that name went away
+  readObjects("Tasks").forEach(function (r) {
+    if (!str(r.id) || str(r.observers) || !str(r.watchers)) return;
+    var record = {};
+    HEAD.Tasks.forEach(function (h) { record[h] = r[h]; });
+    record.observers = str(r.watchers);
+    writeRow("Tasks", r._row, record);
+  });
+
   var users = readObjects("Users");
   users.forEach(function (r) {
     if (!str(r.userId) || str(r.postings)) return;          // already moved over
@@ -1764,7 +1919,7 @@ function carryOverOldAccess() {
   });
 
   // a record tagged with what is now a department key moves to that department
-  ["Companies", "Contacts", "Deals", "Tasks", "Flows"].forEach(function (name) {
+  ["Companies", "Contacts", "Tasks", "Flows"].forEach(function (name) {
     readObjects(name).forEach(function (r) {
       if (!str(r.id) || str(r.dept)) return;
       var hit = "";

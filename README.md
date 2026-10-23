@@ -31,8 +31,9 @@ Three catalogues, all editable in Admin:
 
 - **Departments** — CSM, DM, Ops, CRO
 - **Teams** — each inside a department. CRO has CS, GD and SD.
-- **Positions** — Manager, TL, Next Inline, Member, Observer. Each carries a
-  **rank** and a default of **read** or **write**.
+- **Positions** — Manager, TL, Next Inline, Member. Each carries a **rank**
+  and a default of **read** or **write**. (Observer is not a position: it is
+  something you are on a single task.)
 
 A person holds **postings**, written `dept.team.position`:
 
@@ -95,10 +96,12 @@ Raised  (csm.member, dm.member, ops.member)
   Review → back to Copy / Design / Build, or → Delivered
 ```
 
-Build one in **Flows**: drag step cards to reorder, `+` between two cards to
-insert one, add the desks that handle it and tick the steps it can go to, then
-**Save flow**. Renaming a step is safe — it keeps its key, so routes pointing
-at it and tasks sitting in it both survive.
+Build one in **Flows**, which draws the whole thing as a **flowchart**: each
+step is a block showing the departments that staff it, arrows show where work
+can go, and a dashed curve underneath is work going back. Columns come from
+the routing itself, so nothing is hand-positioned. Click a block to edit it.
+Renaming a step is safe — it keeps its key, so routes pointing at it and tasks
+sitting in it both survive.
 
 Put a task on a flow in the task editor and it enters at an entry step. Then:
 
@@ -124,19 +127,47 @@ flow at all, and keeps plain Todo / In Progress / Done.
 
 ## Who can see a task
 
-Tasks do **not** follow tags. A task is visible only to:
+Tasks do **not** follow the org chart. A task is visible only to:
 
-- the person who raised it,
-- anyone on its watchers list,
-- whoever is holding it now,
-- anyone who has held it along the way (its participants),
+- the person who raised it — always;
+- anyone on its **observers** list — always;
+- whoever is holding it now;
+- anyone who has held it before, **but only while it is still at a desk their
+  own team staffs**. Once their TL signs it off and it moves on, it drops off
+  their list. If it comes back to them, so does the task.
 
-plus admins. Nothing else opens it up — not a tag, not a posting, not being in
-the same department. The drawer spells this out under **Who can see this**, and
-you pull someone in by adding them as a watcher. A watcher can follow the task
-but cannot change it unless it is handed to them.
+Admins see everything. Nothing else opens a task up — not a client tag, not a
+posting, not being in the same department. The drawer spells this out under
+**Who can see this**, and you pull someone in by adding them as an observer.
+An observer follows the task but cannot change it unless it is handed to them.
+
+Someone posted to a whole department follows a task anywhere inside that
+department; a team posting only follows it as far as that team's desks.
 
 A task's department decides which flow and desks apply, and nothing more.
+
+## Chat
+
+Every task has a thread, in its drawer. It is readable by exactly the people
+above and nobody else — the backend checks before it hands over a single
+message. Saying something puts you on the task as a participant, so you keep
+seeing the replies rather than answering a question and losing the thread.
+Enter sends, Shift+Enter makes a new line.
+
+## Task status
+
+Alongside Todo, In Progress, Blocked and Done there is **Confirmations Sent**,
+for work parked while you wait on someone else:
+
+- picking it **clears the deadline** — there is no sense holding a date while
+  the ball is in someone else's court;
+- moving **off** it makes you set a new one, so a parked task cannot quietly
+  lose its date for good. The editor marks the field and the backend refuses
+  the save without it.
+
+**Starting a timer puts a task In Progress** by itself. A task that is Done, or
+parked waiting on confirmations, is left alone — clocking a few minutes against
+it should not quietly restart it.
 
 ## Tags
 
@@ -149,7 +180,7 @@ You always see and edit what you own. `role = admin` adds the Admin view and
 overrides every check, including the routing map.
 
 Editing a task needs more than sight of it: you must have raised it, be holding
-it, or staff the desk it is sitting at. Watchers can look, not touch. Only
+it, or staff the desk it is sitting at. Observers can look, not touch. Only
 whoever raised a task can delete it.
 
 All of this is enforced in the Apps Script, not the browser: bootstrap filters
@@ -159,11 +190,14 @@ reflects the `_canWrite` flag the backend stamps on each row.
 ## Everything else
 
 - **Tasks** — grid or board, with a start/stop timer on every row.
-- **Deals** — a drag-and-drop pipeline, or a grid.
-- **Contacts / Companies** — with their people, deals and tasks on the record.
+- **Contacts / Clients** — with their people and tasks on the record.
 - **Time** — every timer session, by person and by task, plus manual entries.
 - **Admin** — people and their postings, plus the department, team, position
   and client-tag catalogues.
+
+There is no sales pipeline: it does not fit how the work actually runs, so
+Deals is gone and **Flows is what the CRM section opens on**. The Deals tab is
+left untouched in the spreadsheet rather than deleted.
 
 ## Running it
 

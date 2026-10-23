@@ -69,7 +69,7 @@ const slug = s => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").repl
 /* ---------- state ---------- */
 const state = {
   user: null,
-  data: { companies: [], contacts: [], deals: [], tasks: [], flows: [], flowlog: [], time: [],
+  data: { companies: [], contacts: [], tasks: [], flows: [], flowlog: [], time: [],
           tags: [], departments: [], teams: [], positions: [], lists: {}, people: [] },
   running: null,
   users: [],
@@ -78,9 +78,12 @@ const state = {
   q: "",
   filters: {},
   sort: {},
-  mode: { tasks: "grid", deals: "board" },
+  mode: { tasks: "grid" },
   flowSel: null,
   flowDraft: null,
+  parked: "Confirmations Sent",   // the status that clears a task's deadline
+  msgCounts: {},
+  messages: {},                   // taskId -> the thread, fetched when opened
   autoSeconds: Number(localStorage.getItem("crm.autoRefresh") || 300),
   tick: null, autoTimer: null
 };
@@ -359,21 +362,6 @@ const SPEC = {
       { key: "notes", label: "Notes", type: "textarea", full: true }
     ]
   },
-  Deals: {
-    label: "Deal", plural: "Deals", title: r => r.title,
-    fields: [
-      { key: "title", label: "Deal", type: "text", required: true },
-      { key: "value", label: "Value", type: "number" },
-      { key: "stage", label: "Stage", type: "select", list: "stage" },
-      { key: "companyId", label: "Company", type: "company" },
-      { key: "contactId", label: "Contact", type: "contact" },
-      { key: "closeDate", label: "Expected close", type: "date" },
-      { key: "owner", label: "Owner", type: "person" },
-      { key: "scope", label: "Belongs to", type: "scope", full: true },
-      { key: "tags", label: "Client", type: "tags", full: true },
-      { key: "notes", label: "Notes", type: "textarea", full: true }
-    ]
-  },
   Tasks: {
     label: "Task", plural: "Tasks", title: r => r.title,
     fields: [
@@ -386,13 +374,13 @@ const SPEC = {
       { key: "assignee", label: "Assigned to", type: "person" },
       { key: "linkType", label: "Attached to", type: "select",
         options: [{ value: "", label: "Nothing" }, { value: "Companies", label: "Company" },
-                  { value: "Contacts", label: "Contact" }, { value: "Deals", label: "Deal" }] },
+                  { value: "Contacts", label: "Contact" }] },
       { key: "linkId", label: "Which one", type: "link" },
       { key: "scope", label: "Belongs to", type: "scope", full: true,
         hint: "Which department and team this task is for. It picks the flow and the desks — it does not let anyone see the task. Only the people on it can." },
       { key: "tags", label: "Client", type: "tags", full: true },
-      { key: "watchers", label: "Watchers", type: "people", full: true,
-        hint: "Watchers can see the task and follow it, but cannot change it unless it is handed to them." },
+      { key: "observers", label: "Observers", type: "people", full: true,
+        hint: "Observers can see the task and follow it, but cannot change it unless it is handed to them." },
       { key: "notes", label: "Notes", type: "textarea", full: true }
     ]
   }
@@ -402,7 +390,6 @@ function linkLabel(r) {
   if (!r.linkType || !r.linkId) return "";
   if (r.linkType === "Companies") { const c = company(r.linkId); return c ? c.name : "—"; }
   if (r.linkType === "Contacts") { const c = contact(r.linkId); return c ? c.name : "—"; }
-  if (r.linkType === "Deals") { const d = byId(state.data.deals, r.linkId); return d ? d.title : "—"; }
   return "";
 }
 
@@ -443,12 +430,14 @@ async function reload() {
   state.user = r.user;
   API.setUser(r.user);
   state.data = {
-    companies: r.companies || [], contacts: r.contacts || [], deals: r.deals || [],
+    companies: r.companies || [], contacts: r.contacts || [],
     tasks: r.tasks || [], flows: r.flows || [], flowlog: r.flowlog || [],
     time: r.time || [], tags: r.tags || [],
     departments: r.departments || [], teams: r.teams || [], positions: r.positions || [],
     lists: r.lists || {}, people: r.people || []
   };
+  state.parked = r.parkedStatus || "Confirmations Sent";
+  state.msgCounts = r.msgCounts || {};
   state.running = r.running || null;
   // a scope tag that no longer exists would silently hide everything
   if (state.scope && !state.data.departments.some(d => d.dept === state.scope.split(".")[0])) setScope("");
@@ -583,7 +572,7 @@ document.addEventListener("click", async e => {
   if (fwd) { e.stopPropagation(); return forward(fwd.dataset.task, fwd.dataset.forward); }
 
   const unw = e.target.closest("[data-unwatch]");
-  if (unw) { e.stopPropagation(); return setWatcher(unw.dataset.task, unw.dataset.unwatch, true); }
+  if (unw) { e.stopPropagation(); return setObserver(unw.dataset.task, unw.dataset.unwatch, true); }
 });
 
 /* ============================================================================
@@ -592,13 +581,12 @@ document.addEventListener("click", async e => {
 const NAV = [
   { group: "Work", items: [
     { id: "dash",  label: "Dashboard", ic: "▦" },
-    { id: "tasks", label: "Tasks",     ic: "✓", count: () => scoped(state.data.tasks).filter(t => t.status !== "Done").length },
-    { id: "flows", label: "Flows",     ic: "⇥", count: () => usableFlows().length }
+    { id: "tasks", label: "Tasks",     ic: "✓", count: () => scoped(state.data.tasks).filter(t => t.status !== "Done").length }
   ] },
-  { group: "Pipeline", items: [
-    { id: "deals",     label: "Deals",     ic: "◈", count: () => scoped(state.data.deals).length },
+  { group: "CRM", items: [
+    { id: "flows",     label: "Flows",     ic: "⇥", count: () => usableFlows().length },
     { id: "contacts",  label: "Contacts",  ic: "☺", count: () => scoped(state.data.contacts).length },
-    { id: "companies", label: "Companies", ic: "▣", count: () => scoped(state.data.companies).length }
+    { id: "companies", label: "Clients",   ic: "▣", count: () => scoped(state.data.companies).length }
   ] },
   { group: "Insight", items: [ { id: "time", label: "Time", ic: "◷" } ] },
   { group: "System", items: [ { id: "admin", label: "Admin", ic: "⚙", admin: true } ] }
@@ -656,7 +644,7 @@ function renderCrumbs() {
 }
 
 function newForView() {
-  const map = { tasks: "Tasks", deals: "Deals", contacts: "Contacts", companies: "Companies" };
+  const map = { tasks: "Tasks", contacts: "Contacts", companies: "Companies" };
   if (state.view === "flows") return newFlow();
   if (state.view === "time") return editSession(null);
   if (state.view === "admin") return editUser(null);
@@ -715,7 +703,6 @@ function paintView() {
     case "dash": return renderDash();
     case "tasks": return renderTasks();
     case "flows": return renderFlows();
-    case "deals": return renderDeals();
     case "contacts": return renderContacts();
     case "companies": return renderCompanies();
     case "time": return renderTime();
@@ -909,6 +896,10 @@ function renderTaskGrid(rows) {
     { h: "Belongs to", cls: "nw", get: r => scopeHtml(r.dept, r.team) },
     { h: "Client", get: r => tagsHtml(r.tags) },
     { h: "Logged", cls: "num", get: r => fmtMins(taskMinutes(r.id)) },
+    { h: "Chat", cls: "num", get: r => {
+        const n = state.msgCounts[r.id] || 0;
+        return n ? `<span class="msgcount">● ${n}</span>` : '<span class="ro">—</span>';
+      } },
     { h: "", cls: "act", get: r => {
         const live = state.running && state.running.taskId === r.id;
         const mine = r._canWrite || lc(r.assignee) === lc(state.user.userId);
@@ -1160,7 +1151,7 @@ function renderCanvas() {
        <div><div class="mk">On this flow</div><div style="font-size:12.5px">${
          state.data.tasks.filter(t => t.flowId === d.id).length} task(s)</div></div>
      </div>
-     <div class="mk" style="font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:10px">Stages</div>
+     <div class="mk" style="font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:10px">Flowchart</div>
      <div class="chain" id="fChain"></div>`;
 
   paintFlowTags();
@@ -1197,43 +1188,181 @@ function paintFlowTags() {
   if (t) t.addEventListener("input", e => { d.team = e.target.value; });
 }
 
+/* ---------- the flowchart ----------
+   Columns come from the shortest path out of an entry step, so the chart
+   reads left to right and a step that sends work back simply draws a curve
+   returning to an earlier column. Nothing is hand-positioned. */
+const NODE_W = 200, NODE_H = 96, GAP_X = 66, GAP_Y = 26;
+
+function outsOf(stages, s) {
+  if (s.next && s.next.length) return s.next;
+  const i = stages.indexOf(s);
+  return stages[i + 1] ? [stages[i + 1].key] : [];
+}
+
+function layoutFlow(stages) {
+  const byKey = {};
+  stages.forEach(s => { byKey[s.key] = s; });
+  const entries = stages.filter(s => s.entry);
+  const roots = (entries.length ? entries : stages.slice(0, 1)).map(s => s.key);
+
+  const layer = {}, queue = roots.slice();
+  roots.forEach(k => { layer[k] = 0; });
+  while (queue.length) {
+    const k = queue.shift();
+    const s = byKey[k];
+    if (!s) continue;
+    outsOf(stages, s).forEach(n => {
+      if (!byKey[n] || layer[n] !== undefined) return;
+      layer[n] = layer[k] + 1;
+      queue.push(n);
+    });
+  }
+  // a step nothing routes to still has to go somewhere
+  let maxL = 0;
+  Object.keys(layer).forEach(k => { maxL = Math.max(maxL, layer[k]); });
+  stages.forEach(s => { if (layer[s.key] === undefined) layer[s.key] = maxL + 1; });
+
+  const cols = [];
+  stages.forEach(s => {
+    const l = layer[s.key];
+    (cols[l] = cols[l] || []).push(s);
+  });
+
+  const pos = {};
+  cols.forEach((col, ci) => {
+    (col || []).forEach((s, ri) => {
+      pos[s.key] = { x: ci * (NODE_W + GAP_X), y: ri * (NODE_H + GAP_Y), col: ci, row: ri };
+    });
+  });
+  const rows = cols.reduce((m, c) => Math.max(m, (c || []).length), 0);
+  return {
+    pos, cols,
+    width: Math.max(1, cols.length) * (NODE_W + GAP_X) - GAP_X,
+    height: Math.max(1, rows) * (NODE_H + GAP_Y) - GAP_Y
+  };
+}
+
+function edgePath(a, b) {
+  const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2;
+  const x2 = b.x,          y2 = b.y + NODE_H / 2;
+  if (x2 >= x1) {                                  // forward: a flat S-curve
+    const dx = Math.max(28, (x2 - x1) / 2);
+    return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+  }
+  // sending work back: drop under the row and come up into the left edge
+  const ax = a.x + NODE_W / 2, bx = b.x + NODE_W / 2;
+  const under = Math.max(a.y, b.y) + NODE_H + 16;
+  return `M ${ax} ${a.y + NODE_H} C ${ax} ${under}, ${bx} ${under}, ${bx} ${b.y + NODE_H}`;
+}
+
 function paintChain() {
   const d = state.flowDraft;
-  const chain = $("fChain");
-  if (!chain) return;
+  const host = $("fChain");
+  if (!host) return;
   const ro = !d._canWrite;
-  chain.innerHTML = "";
+  host.innerHTML = "";
+
+  if (!d.stages.length) {
+    host.innerHTML = `<div class="ro">No steps yet.</div>`;
+    if (!ro) {
+      const add = el("button", "btn sm", "+ Step");
+      add.style.marginTop = "10px";
+      add.onclick = () => addStage(0);
+      host.appendChild(add);
+    }
+    return;
+  }
+
+  const L = layoutFlow(d.stages);
+  const chart = el("div", "chart");
+  chart.style.width = L.width + "px";
+  chart.style.height = (L.height + 40) + "px";
+
+  // edges first, so the nodes sit on top of them
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "edges");
+  svg.setAttribute("width", L.width);
+  svg.setAttribute("height", L.height + 40);
+  svg.innerHTML =
+    `<defs><marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7"
+       orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" fill="currentColor"/></marker></defs>`;
+  d.stages.forEach(s => {
+    const a = L.pos[s.key];
+    outsOf(d.stages, s).forEach(k => {
+      const b = L.pos[k];
+      if (!a || !b) return;
+      const back = b.x < a.x + NODE_W;
+      const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      p.setAttribute("d", edgePath(a, b));
+      p.setAttribute("class", "edge" + (back ? " back" : ""));
+      p.setAttribute("marker-end", "url(#arrow)");
+      svg.appendChild(p);
+    });
+  });
+  chart.appendChild(svg);
 
   d.stages.forEach((s, i) => {
-    if (i > 0) chain.appendChild(linkNode(i, ro));
-    chain.appendChild(stageNode(s, i, ro));
+    const p = L.pos[s.key];
+    const node = el("div", "node" + (state.stepSel === s.key ? " sel" : ""));
+    node.style.cssText = `left:${p.x}px;top:${p.y}px;width:${NODE_W}px;--c:${s.colour}`;
+
+    // the departments this step sits with, drawn as blocks
+    const seen = {}, blocks = [];
+    (s.to || []).forEach(t => {
+      const q = parsePosting(t);
+      if (!q) return;
+      const key = q.dept + "/" + (q.team || "");
+      if (seen[key]) return;
+      seen[key] = 1;
+      const dm = deptMeta(q.dept);
+      blocks.push(`<span class="deptblock" style="--c:${esc(dm.colour)}">${esc(dm.label)}` +
+        (q.team ? `<i>${esc(teamMeta(q.team).label)}</i>` : "") + `</span>`);
+    });
+
+    const here = state.data.tasks.filter(t => t.flowId === d.id && t.stage === s.key).length;
+    node.innerHTML =
+      `<div class="nhead"><span class="nstep">${i + 1}</span><span class="nname">${esc(s.name)}</span></div>` +
+      `<div class="nblocks">${blocks.join("") || '<span class="ro">no desk</span>'}</div>` +
+      `<div class="nfoot">` +
+        (s.entry ? `<span class="nflag in">in</span>` : "") +
+        (s.approval ? `<span class="nflag ap">approval</span>` : "") +
+        (s.terminal ? `<span class="nflag fin">final</span>` : "") +
+        (s.slaHours ? `<span class="ls">${s.slaHours}h</span>` : "") +
+        `<span class="spacer"></span>` +
+        (here ? `<span class="nhere">${here}</span>` : "") +
+      `</div>`;
+    node.onclick = () => {
+      state.stepSel = state.stepSel === s.key ? null : s.key;
+      paintChain();
+    };
+    chart.appendChild(node);
   });
+
+  const wrap = el("div", "chartwrap");
+  wrap.appendChild(chart);
+  host.appendChild(wrap);
+
   if (!ro) {
-    const tail = el("div", "tail");
-    const add = el("button", "btn sm", "+ Stage");
-    add.onclick = () => { addStage(d.stages.length); };
-    tail.appendChild(add);
-    chain.appendChild(tail);
+    const bar = el("div", "chartbar");
+    const add = el("button", "btn sm", "+ Step");
+    add.onclick = () => addStage(d.stages.length);
+    bar.appendChild(add);
+    bar.appendChild(el("span", "hint", "Click a step to edit it. Arrows show where work can be sent; a curve underneath is work going back."));
+    host.appendChild(bar);
   }
-  if (!d.stages.length && ro) chain.innerHTML = '<div class="ro">no stages</div>';
+
+  // the selected step's editor, under the chart
+  const sel = d.stages.findIndex(s => s.key === state.stepSel);
+  if (sel >= 0) host.appendChild(stageNode(d.stages[sel], sel, ro));
 }
 
-function linkNode(index, ro) {
-  const link = el("div", "link");
-  if (!ro) {
-    const add = el("button", "add", "+");
-    add.title = "Insert a stage here";
-    add.onclick = () => addStage(index);
-    link.appendChild(add);
-  }
-  return link;
-}
-
+/* The editor for one step, shown under the chart when a node is picked.
+   Position in the chart comes from the routing, so there is nothing to drag. */
 function stageNode(s, i, ro) {
   const d = state.flowDraft;
-  const card = el("div", "stagecard");
+  const card = el("div", "stagecard open");
   card.style.setProperty("--c", s.colour);
-  card.draggable = !ro;
 
   const others = d.stages.filter(o => o !== s);
   const goesTo = (s.next && s.next.length) ? s.next
@@ -1323,14 +1452,6 @@ function stageNode(s, i, ro) {
   card.querySelector("[data-up]").onclick = () => move(i, i - 1);
   card.querySelector("[data-down]").onclick = () => move(i, i + 1);
 
-  card.addEventListener("dragstart", ev => { ev.dataTransfer.setData("text/plain", String(i)); card.classList.add("drag"); });
-  card.addEventListener("dragend", () => card.classList.remove("drag"));
-  card.addEventListener("dragover", ev => ev.preventDefault());
-  card.addEventListener("drop", ev => {
-    ev.preventDefault();
-    const from = Number(ev.dataTransfer.getData("text/plain"));
-    if (!isNaN(from)) move(from, i);
-  });
   return card;
 }
 
@@ -1400,6 +1521,7 @@ function addStage(at) {
     to: [], next: [], slaHours: 24, entry: false, approval: false, terminal: false
   };
   d.stages.splice(at, 0, stage);
+  state.stepSel = stage.key;      // open the new step straight away
   paintChain();
 }
 
@@ -1511,105 +1633,6 @@ function pickHandover(taskId, stepKey) {
   });
 }
 
-/* ============================================================================
-   DEALS
-   ========================================================================== */
-function dealRows() {
-  const tag = filt("deals", "tag");
-  const who = filt("deals", "who");
-  return scoped(state.data.deals).filter(d => {
-    if (tag && tagsOf(d.tags).indexOf(tag) < 0) return false;
-    if (who === "@me") { if (lc(d.owner) !== lc(state.user.userId)) return false; }
-    else if (who && lc(d.owner) !== lc(who)) return false;
-    const c = company(d.companyId);
-    return hits(d, ["title", "notes", "stage"]) || (!!state.q && !!c && lc(c.name).indexOf(lc(state.q)) >= 0);
-  });
-}
-
-function renderDeals() {
-  const mode = state.mode.deals;
-  setBar("Deals", null,
-    sel("f_who", peopleOpts("Any owner"), filt("deals", "who")) +
-    (state.scope ? "" : sel("f_tag", [{ value: "", label: "Any client" }]
-      .concat(state.data.tags.map(t => ({ value: t.tag, label: t.label }))), filt("deals", "tag"))) +
-    `<span class="spacer"></span>` +
-    `<div class="seg" id="dealMode">
-       <button data-m="board" class="${mode === "board" ? "on" : ""}">Board</button>
-       <button data-m="grid" class="${mode === "grid" ? "on" : ""}">Grid</button>
-     </div>`);
-  ["who", "tag"].forEach(k => onFilt("deals", k));
-  $("dealMode").onclick = e => {
-    const b = e.target.closest("button[data-m]"); if (!b) return;
-    state.mode.deals = b.dataset.m; renderDeals();
-  };
-
-  const rows = dealRows();
-  $("dealGridWrap").style.display = mode === "grid" ? "block" : "none";
-  $("dealBoard").style.display = mode === "board" ? "flex" : "none";
-  if (mode === "board") renderDealBoard(rows); else renderDealGrid(rows);
-
-  const open = rows.filter(d => d.stage !== "Won" && d.stage !== "Lost");
-  const won = rows.filter(d => d.stage === "Won").reduce((s, d) => s + (Number(d.value) || 0), 0);
-  statusCount(`${open.length} live · ${money(open.reduce((s, d) => s + (Number(d.value) || 0), 0))} open · ${money(won)} won`);
-}
-
-function renderDealBoard(rows) {
-  const wrap = $("dealBoard");
-  wrap.innerHTML = "";
-  (state.data.lists.stage || []).forEach(st => {
-    const mine = rows.filter(d => lc(d.stage) === lc(st.value));
-    const col = el("div", "bcol");
-    const sum = mine.reduce((s, d) => s + (Number(d.value) || 0), 0);
-    col.appendChild(el("div", "bchead",
-      `<span class="pill" style="--c:${esc(st.colour)}"><span class="dot"></span>${esc(st.label)}</span>` +
-      `<span class="spacer"></span><span class="bs">${mine.length} · ${money(sum)}</span>`));
-    const body = el("div", "bcbody");
-    if (!mine.length) body.appendChild(el("div", "bempty", "—"));
-    mine.forEach(d => {
-      const c = company(d.companyId);
-      const card = el("div", "bcard");
-      card.draggable = !!d._canWrite;
-      card.innerHTML = `<div class="bt">${esc(d.title)}</div><div class="bm">` +
-        (d.value ? `<span class="bv">${money(d.value)}</span>` : "") +
-        (c ? `<span>${esc(c.name)}</span>` : "") +
-        (d.closeDate ? `<span>${esc(fmtDay(d.closeDate))}</span>` : "") + `</div>`;
-      card.onclick = () => openDrawer("Deals", d.id);
-      card.addEventListener("dragstart", ev => { ev.dataTransfer.setData("text/plain", d.id); card.classList.add("drag"); });
-      card.addEventListener("dragend", () => card.classList.remove("drag"));
-      body.appendChild(card);
-    });
-    col.appendChild(body);
-    col.addEventListener("dragover", ev => { ev.preventDefault(); col.classList.add("over"); });
-    col.addEventListener("dragleave", () => col.classList.remove("over"));
-    col.addEventListener("drop", async ev => {
-      ev.preventDefault(); col.classList.remove("over");
-      const d = byId(state.data.deals, ev.dataTransfer.getData("text/plain"));
-      if (d && lc(d.stage) !== lc(st.value)) await patch("Deals", d, { stage: st.value });
-    });
-    wrap.appendChild(col);
-  });
-}
-
-function renderDealGrid(rows) {
-  rows = sortRows(rows, "deals", "title");
-  grid($("gDeals"), [
-    { h: "Deal", cls: "wrap", sort: "title", get: r => {
-        const c = company(r.companyId), p = contact(r.contactId);
-        return `<div class="prime">${esc(r.title)}</div>` +
-               `<div class="sub">${esc([c && c.name, p && p.name].filter(Boolean).join(" · ")) || "—"}</div>`;
-      } },
-    { h: "Stage", sort: "stage", get: r => pillHtml("stage", r.stage) },
-    { h: "Value", cls: "num", sort: "value", get: r => money(r.value) },
-    { h: "Close", sort: "closeDate", get: r => esc(fmtDay(r.closeDate)) || "—" },
-    { h: "Owner", sort: "owner", get: r => whoHtml(r.owner) },
-    { h: "Belongs to", cls: "nw", get: r => scopeHtml(r.dept, r.team) },
-    { h: "Client", get: r => tagsHtml(r.tags) },
-    { h: "", cls: "act", get: r => `<span class="rowacts">${editBtn("Deals", r)}</span>` }
-  ], rows, {
-    key: "deals", blankTitle: "No deals", blank: "Create one with + New.",
-    onRow: r => openDrawer("Deals", r.id)
-  });
-}
 
 /* ============================================================================
    CONTACTS / COMPANIES
@@ -1664,7 +1687,6 @@ function renderCompanies() {
     { h: "City", sort: "city", get: r => esc(r.city) || "—" },
     { h: "Phone", get: r => esc(r.phone) || "—" },
     { h: "Contacts", cls: "num", get: r => String(state.data.contacts.filter(c => c.companyId === r.id).length) },
-    { h: "Deals", cls: "num", get: r => String(state.data.deals.filter(d => d.companyId === r.id).length) },
     { h: "Owner", sort: "owner", get: r => whoHtml(r.owner) },
     { h: "Belongs to", cls: "nw", get: r => scopeHtml(r.dept, r.team) },
     { h: "Client", get: r => tagsHtml(r.tags) },
@@ -1746,8 +1768,7 @@ function renderDash() {
   const mine = open.filter(t => lc(t.assignee) === me)
     .sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
   const overdue = open.filter(t => t.dueDate && t.dueDate < todayIso());
-  const deals = scoped(state.data.deals);
-  const live = deals.filter(d => d.stage !== "Won" && d.stage !== "Lost");
+  const parked = open.filter(t => t.status === state.parked);
   const todayMins = state.data.time.filter(t => t.date === todayIso() && lc(t.userId) === me)
     .reduce((s, t) => s + (t.minutes || 0), 0) + liveMinutes();
 
@@ -1764,7 +1785,7 @@ function renderDash() {
   const kpis = [
     ["My open tasks", mine.length, `${overdue.length} overdue in scope`],
     ["Logged today", fmtMins(todayMins), state.running ? "timer running" : "no timer running"],
-    ["Open pipeline", money(live.reduce((s, d) => s + (Number(d.value) || 0), 0)), `${live.length} live deals`],
+    ["Awaiting confirmation", parked.length, parked.length ? "no deadline until they come back" : "nothing parked"],
     ["Past stage target", stuck.length, stuck.length ? "oldest " + fmtAge(stuck[0].over) + " over" : "all on time"]
   ].map(([l, v, d]) => `<div class="kpi"><div class="l">${esc(l)}</div><div class="v">${esc(v)}</div><div class="d">${esc(d)}</div></div>`).join("");
 
@@ -1799,23 +1820,25 @@ function renderDash() {
     `<div class="btrack"><span style="width:${Math.round(v.n / maxLoad * 100)}%;background:${esc(v.colour)}"></span></div></div>`).join("") + `</div>`
     : `<div class="nothing">No tasks are on a flow yet.</div>`;
 
-  const stages = state.data.lists.stage || [];
-  const pipeRows = stages.filter(s => s.value !== "Lost").map(s => {
-    const list = deals.filter(d => lc(d.stage) === lc(s.value));
-    return { s, n: list.length, v: list.reduce((a, d) => a + (Number(d.value) || 0), 0) };
+  // who is holding how much open work, across the flows in scope
+  const byDesk = {};
+  tasks.forEach(t => {
+    if (t.status === "Done" || !t.assignee) return;
+    byDesk[t.assignee] = (byDesk[t.assignee] || 0) + 1;
   });
-  const maxV = Math.max(1, ...pipeRows.map(r => r.v));
-  const pipeHtml = pipeRows.length ? `<div class="bars">` + pipeRows.map(r =>
-    `<div class="bar"><div class="bl"><span>${esc(r.s.label)} <span class="ls">(${r.n})</span></span><b>${money(r.v)}</b></div>` +
-    `<div class="btrack"><span style="width:${Math.round(r.v / maxV * 100)}%;background:${esc(r.s.colour)}"></span></div></div>`).join("") + `</div>`
-    : `<div class="nothing">No deals yet.</div>`;
+  const deskRows = Object.keys(byDesk).map(k => [k, byDesk[k]]).sort((a, b) => b[1] - a[1]);
+  const maxDesk = deskRows.length ? deskRows[0][1] : 1;
+  const deskHtml = deskRows.length ? `<div class="bars">` + deskRows.slice(0, 8).map(([k, n]) =>
+    `<div class="bar"><div class="bl"><span>${esc(personName(k))}</span><b>${n}</b></div>` +
+    `<div class="btrack"><span style="width:${Math.round(n / maxDesk * 100)}%"></span></div></div>`).join("") + `</div>`
+    : `<div class="nothing">Nothing open.</div>`;
 
   $("dashGrid").innerHTML =
     `<div class="kpis">${kpis}</div>` +
     panel("My tasks", mine.length ? mine.length + " open" : "", myList) +
     panel("Stage load", "open work by flow stage", loadHtml) +
     panel("Past stage target", stuck.length ? stuck.length + " waiting" : "", stuckList) +
-    panel("Pipeline", money(pipeRows.reduce((a, r) => a + r.v, 0)), pipeHtml);
+    panel("Who is holding what", `${deskRows.length} people`, deskHtml);
   statusCount("");
 }
 
@@ -1838,9 +1861,15 @@ async function startTimer(taskId) {
     }
     state.running = r.running;
     if (r.running && !state.data.time.some(t => t.id === r.running.id)) state.data.time.push(r.running);
+    // starting the clock is what moves a task to In Progress
+    if (r.task) {
+      const i = state.data.tasks.findIndex(t => t.id === r.task.id);
+      if (i >= 0) state.data.tasks[i] = r.task;
+    }
     const t = taskOf(taskId);
-    toast("Timer started" + (t ? " · " + t.title : ""), "ok");
+    toast("Timer started" + (t ? " · " + t.title : "") + (r.task ? " · now In Progress" : ""), "ok");
     paint();
+    if ($("drawer").classList.contains("on")) openDrawer("Tasks", taskId);
   } catch (err) { toast(err.message, "err"); }
 }
 
@@ -1903,10 +1932,6 @@ function openDrawer(entity, id) {
     badges.push(pillHtml("taskStatus", row.status));
     if (row.priority) badges.push(pillHtml("priority", row.priority));
     if (row.dueDate) badges.push(`<span class="${dueClass(row.dueDate, row.status === "Done")}">Due ${esc(fmtDay(row.dueDate))}</span>`);
-  }
-  if (entity === "Deals") {
-    badges.push(pillHtml("stage", row.stage));
-    if (row.value) badges.push(`<b style="color:var(--accent)">${money(row.value)}</b>`);
   }
   if (entity === "Contacts") badges.push(pillHtml("contactStatus", row.status));
   if (!row._canWrite) badges.push(`<span class="ro">read only</span>`);
@@ -1992,7 +2017,7 @@ function openDrawer(entity, id) {
   const bits = [];
   // owner gets its own row below; linkType only exists to pick linkId
   const skip = ["notes", "tags", "flowId", "status", "priority", "stage", "owner",
-                "linkType", "name", "watchers", "participants", "assignee"];
+                "linkType", "name", "observers", "participants", "assignee"];
   spec.fields.forEach(f => {
     if (skip.indexOf(f.key) >= 0) return;
     if (f.key === "title" && entity !== "Contacts") return;     // already the heading
@@ -2003,7 +2028,7 @@ function openDrawer(entity, id) {
     if (f.type === "link") {
       if (!row.linkId) return;
       label = "Attached to";
-      const kind = { Companies: "company", Contacts: "contact", Deals: "deal" }[row.linkType] || "";
+      const kind = { Companies: "client", Contacts: "contact" }[row.linkType] || "";
       v = linkLabel(row) + (kind ? " (" + kind + ")" : "");
     }
     if (f.type === "date") v = fmtDay(v);
@@ -2016,23 +2041,23 @@ function openDrawer(entity, id) {
     `</div></div>`;
 
   if (entity === "Tasks") {
-    const watchers = tagsOf(row.watchers);
+    const observers = tagsOf(row.observers);
     const parts = tagsOf(row.participants)
-      .filter(p => p !== lc(row.owner) && p !== lc(row.assignee) && watchers.indexOf(p) < 0);
+      .filter(p => p !== lc(row.owner) && p !== lc(row.assignee) && observers.indexOf(p) < 0);
     const me = lc(state.user.userId);
     const canManage = row._canWrite || lc(row.owner) === me;
     html += `<div class="sect"><h4>Who can see this</h4>` +
       `<div class="lrow"><span class="ls" style="width:76px">Raised by</span>${whoHtml(row.owner)}</div>` +
       `<div class="lrow"><span class="ls" style="width:76px">Holding it</span>${row.assignee ? whoHtml(row.assignee) : '<span class="ro">nobody</span>'}</div>` +
-      `<div class="lrow"><span class="ls" style="width:76px">Watchers</span>` +
-        (watchers.length
-          ? `<span class="tags">` + watchers.map(w =>
+      `<div class="lrow"><span class="ls" style="width:76px">Observers</span>` +
+        (observers.length
+          ? `<span class="tags">` + observers.map(w =>
               `<span class="watch">${whoHtml(w)}` +
               ((canManage || w === me) ? `<button class="x" data-unwatch="${esc(w)}" data-task="${esc(row.id)}" title="Remove">×</button>` : "") +
               `</span>`).join("") + `</span>`
           : '<span class="ro">none</span>') +
         `<span class="spacer"></span>` +
-        `<button class="btn xs" id="btnAddWatcher">+ Add</button></div>` +
+        `<button class="btn xs" id="btnAddObserver">+ Add</button></div>` +
       (parts.length
         ? `<div class="lrow"><span class="ls" style="width:76px">Has held it</span><span class="tags">` +
           parts.map(p => whoHtml(p)).join("") + `</span></div>`
@@ -2041,8 +2066,20 @@ function openDrawer(entity, id) {
       `</div>`;
   }
 
-  html += `<div class="sect"><h4>Tags</h4>${tagsHtml(row.tags)}</div>`;
+  html += `<div class="sect"><h4>Client</h4>${tagsHtml(row.tags)}</div>`;
   if (row.notes) html += `<div class="sect"><h4>Notes</h4><div class="note">${esc(row.notes)}</div></div>`;
+
+  if (entity === "Tasks") {
+    const n = state.msgCounts[row.id] || 0;
+    html += `<div class="sect" id="chatSect"><h4>Chat${n ? " · " + n : ""}</h4>` +
+      `<div class="chat" id="chatBody"><div class="chatload">Loading…</div></div>` +
+      `<form class="chatbox" id="chatForm" autocomplete="off">` +
+        `<textarea id="chatText" rows="1" placeholder="Write a message…"></textarea>` +
+        `<button class="btn pri sm" type="submit" id="chatSend">Send</button>` +
+      `</form>` +
+      `<div class="hint">Everyone who can see this task can read the thread. Saying something puts you on the task, so you keep seeing replies.</div>` +
+      `</div>`;
+  }
 
   // --- related ---
   if (entity === "Tasks") {
@@ -2058,13 +2095,9 @@ function openDrawer(entity, id) {
   } else {
     if (entity === "Companies") {
       const people = state.data.contacts.filter(c => c.companyId === row.id);
-      const deals = state.data.deals.filter(d => d.companyId === row.id);
       if (people.length) html += `<div class="sect"><h4>Contacts</h4>` + people.map(c =>
         `<div class="lrow"><span class="lt">${esc(c.name)}</span><span class="ls">${esc(c.title)}</span>` +
         `<span class="spacer"></span>${pillHtml("contactStatus", c.status)}</div>`).join("") + `</div>`;
-      if (deals.length) html += `<div class="sect"><h4>Deals</h4>` + deals.map(d =>
-        `<div class="lrow"><span class="lt">${esc(d.title)}</span><span class="spacer"></span>` +
-        `<span class="ls">${money(d.value)}</span>${pillHtml("stage", d.stage)}</div>`).join("") + `</div>`;
     }
     const rel = state.data.tasks.filter(t => t.linkType === entity && t.linkId === row.id);
     if (rel.length) html += `<div class="sect"><h4>Tasks</h4>` + rel.map(t =>
@@ -2085,13 +2118,97 @@ function openDrawer(entity, id) {
   if (row._canWrite) foot.push(`<button class="btn pri" data-edit="${esc(entity)}" data-id="${esc(row.id)}">Edit</button>`);
   $("drawerFoot").innerHTML = foot.join("");
 
-  if ($("btnAddWatcher")) $("btnAddWatcher").onclick = () => addWatcher(row.id);
+  if ($("btnAddObserver")) $("btnAddObserver").onclick = () => addObserver(row.id);
+  if (entity === "Tasks") mountChat(row);
 
   $("drawer").classList.add("on");
   $("scrim").classList.add("on");
 }
 
-async function setWatcher(taskId, who, remove) {
+/* ---------- task chat ---------- */
+function renderChat(taskId) {
+  const box = $("chatBody");
+  if (!box) return;
+  const list = state.messages[taskId];
+  if (!list) { box.innerHTML = `<div class="chatload">Loading…</div>`; return; }
+  if (!list.length) { box.innerHTML = `<div class="chatload">No messages yet.</div>`; return; }
+
+  const me = lc(state.user.userId);
+  let lastDay = "", html = "";
+  list.forEach(m => {
+    const day = String(m.at || "").slice(0, 10);
+    if (day && day !== lastDay) {
+      lastDay = day;
+      html += `<div class="chatday">${esc(day === todayIso() ? "Today" : fmtDay(day))}</div>`;
+    }
+    const mine = lc(m.userId) === me;
+    html += `<div class="msg${mine ? " mine" : ""}">` +
+      `<div class="mhead"><span class="av">${esc(initials(personName(m.userId)))}</span>` +
+      `<b>${esc(mine ? "You" : personName(m.userId))}</b>` +
+      `<span class="ls">${esc(fmtClock(m.at))}</span></div>` +
+      `<div class="mtext">${esc(m.text)}</div></div>`;
+  });
+  box.innerHTML = html;
+  box.scrollTop = box.scrollHeight;
+}
+
+async function mountChat(row) {
+  const form = $("chatForm");
+  if (!form) return;
+  const taskId = row.id;
+
+  renderChat(taskId);
+  if (!state.messages[taskId]) {
+    try {
+      const r = await API.messages(taskId);
+      state.messages[taskId] = r.messages || [];
+      state.msgCounts[taskId] = state.messages[taskId].length;
+    } catch (err) {
+      state.messages[taskId] = [];
+      const box = $("chatBody");
+      if (box) box.innerHTML = `<div class="chatload">Could not load the thread: ${esc(err.message)}</div>`;
+      return;
+    }
+    // the drawer may have moved on to another record while that was in flight
+    if ($("chatForm") !== form) return;
+    renderChat(taskId);
+  }
+
+  const text = $("chatText");
+  // grow the box with the message, up to a point
+  text.addEventListener("input", () => {
+    text.style.height = "auto";
+    text.style.height = Math.min(text.scrollHeight, 130) + "px";
+  });
+  text.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+  });
+
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const body = text.value.trim();
+    if (!body) return;
+    $("chatSend").disabled = true;
+    try {
+      const r = await API.postMessage(taskId, body);
+      (state.messages[taskId] = state.messages[taskId] || []).push(r.message);
+      state.msgCounts[taskId] = state.messages[taskId].length;
+      text.value = ""; text.style.height = "auto";
+      renderChat(taskId);
+      // posting puts you on the task, so the list may have changed
+      const t = taskOf(taskId);
+      if (t) t.participants = (t.participants ? t.participants + ", " : "") + lc(state.user.userId);
+    } catch (err) {
+      toast(err.message, "err");
+    } finally {
+      const b = $("chatSend");
+      if (b) b.disabled = false;
+      if ($("chatText")) $("chatText").focus();
+    }
+  };
+}
+
+async function setObserver(taskId, who, remove) {
   try {
     const r = await API.watch(taskId, who, remove);
     const i = state.data.tasks.findIndex(t => t.id === taskId);
@@ -2104,25 +2221,25 @@ async function setWatcher(taskId, who, remove) {
       if (gone) { state.data.tasks.splice(i, 1); closeDrawer(); }
       else state.data.tasks[i] = r.task;
     }
-    toast(remove ? "Watcher removed" : "Watcher added", "ok");
+    toast(remove ? "Observer removed" : "Observer added", "ok");
     paint();
     if ($("drawer").classList.contains("on")) openDrawer("Tasks", taskId);
   } catch (err) { toast(err.message, "err"); }
 }
 
-function addWatcher(taskId) {
+function addObserver(taskId) {
   const t = taskOf(taskId);
-  const on = tagsOf(t.watchers).concat([lc(t.owner), lc(t.assignee)]);
+  const on = tagsOf(t.observers).concat([lc(t.owner), lc(t.assignee)]);
   const pool = state.data.people.filter(p => on.indexOf(lc(p.userId)) < 0);
   if (!pool.length) { toast("Everyone is already on this task.", "err"); return; }
   modal({
-    title: "Add a watcher",
+    title: "Add an observer",
     saveLabel: "Add",
     body: `<div class="field"><label>Who</label><select class="inp" id="awWho">` +
       pool.map(p => `<option value="${esc(p.userId)}">${esc(p.name)}${p.posts && p.posts.length ? " — " + esc(p.posts.map(q => deskLabel(postingText(q))).join(", ")) : ""}</option>`).join("") +
-      `</select><div class="hint">A watcher can see the task and follow where it goes, but cannot change it unless it is handed to them.</div></div>`,
+      `</select><div class="hint">An observer can see the task and follow where it goes, but cannot change it unless it is handed to them.</div></div>`,
     after: () => modalSave(async () => {
-      await setWatcher(taskId, $("awWho").value, false);
+      await setObserver(taskId, $("awWho").value, false);
       closeModal();
     })
   });
@@ -2186,7 +2303,6 @@ function openEditor(entity, id) {
       draft.status = ((state.data.lists.taskStatus || [{}])[0] || {}).value || "Todo";
       draft.priority = "Normal";
     }
-    if (entity === "Deals") draft.stage = ((state.data.lists.stage || [{}])[0] || {}).value || "Lead";
     if (entity === "Contacts") draft.status = ((state.data.lists.contactStatus || [{}])[0] || {}).value || "";
     /* A new record should not be born private: put it where the person is
        standing, or at the first place they can write to. */
@@ -2194,7 +2310,8 @@ function openEditor(entity, id) {
     const pick = (here && canWriteScope(here.dept, here.team)) ? here : myWritableScopes()[0];
     if (pick) { draft.dept = pick.dept; draft.team = pick.team || ""; }
   }
-  editing = { entity, id: row ? row.id : "", draft, wasFlow: row ? row.flowId : "" };
+  editing = { entity, id: row ? row.id : "", draft,
+              wasFlow: row ? row.flowId : "", wasStatus: row ? row.status : "" };
 
   modal({
     title: (row ? "Edit " : "New ") + spec.label.toLowerCase(),
@@ -2227,6 +2344,12 @@ function paintFields() {
     if (f.key === "linkId" && !editing.draft.linkType) return;
     // on a flow, who holds the task is decided by forwarding, not by typing
     if (f.key === "assignee" && editing.draft.flowId) return;
+    /* A parked task has no deadline by definition, so the field goes away;
+       coming back off the park, it returns and has to be filled. */
+    if (f.key === "dueDate" && editing.draft.status === state.parked) {
+      editing.draft.dueDate = "";
+      return;
+    }
     if (f.full && row.children.length) { body.appendChild(row); row = el("div", "frow"); }
     row.appendChild(fieldNode(f));
     if (f.full) { body.appendChild(row); row = el("div", "frow"); }
@@ -2343,7 +2466,7 @@ function fieldNode(f) {
       const t = editing.draft.linkType;
       const src = t === "Companies" ? state.data.companies
                 : t === "Contacts" ? state.data.contacts
-                : t === "Deals" ? state.data.deals : [];
+                : [];
       opts = [{ value: "", label: "—" }].concat(src.map(r => ({ value: r.id, label: r.name || r.title })));
     }
     node.innerHTML = opts.map(o =>
@@ -2356,10 +2479,20 @@ function fieldNode(f) {
   }
   node.addEventListener("input", () => {
     editing.draft[f.key] = node.value;
-    if (f.key === "linkType" || f.key === "companyId") paintFields();
+    // these three reshape the rest of the form
+    if (f.key === "linkType" || f.key === "companyId" || f.key === "status") paintFields();
   });
   wrap.appendChild(node);
-  if (f.hint) wrap.appendChild(el("div", "hint", esc(f.hint)));
+
+  let hint = f.hint;
+  if (f.key === "status" && editing.draft.status === state.parked) {
+    hint = "Parked. The deadline is cleared while you wait; you will be asked for a new one when you move it on.";
+  }
+  if (f.key === "dueDate" && editing.wasStatus === state.parked && editing.draft.status !== state.parked) {
+    wrap.classList.add("needs");
+    hint = "This task was parked. Set a new deadline before saving.";
+  }
+  if (hint) wrap.appendChild(el("div", "hint", esc(hint)));
   return wrap;
 }
 
@@ -2373,6 +2506,14 @@ async function saveEditor() {
   if (editing.id) record.id = editing.id;
   // moving off a flow, or onto a different one, drops the old stage
   if (editing.entity === "Tasks" && record.flowId !== editing.wasFlow) record.stage = "";
+
+  if (editing.entity === "Tasks") {
+    // parking a task drops its deadline; coming back off needs a new one
+    if (record.status === state.parked) record.dueDate = "";
+    else if (editing.wasStatus === state.parked && !String(record.dueDate || "").trim()) {
+      throw new Error("Set a new deadline — this task has been parked since confirmations went out.");
+    }
+  }
 
   const r = await API.save(editing.entity, record);
   const arr = state.data[editing.entity.toLowerCase()];
@@ -2531,7 +2672,7 @@ function renderAdmin() {
     { h: "Label", get: r => esc(r.label) },
     { h: "Colour", get: r => `<code>${esc(r.colour)}</code>` },
     { h: "Flows", cls: "num", get: r => String(state.data.flows.filter(f => tagsOf(f.tags).indexOf(r.tag) >= 0).length) },
-    { h: "Records", cls: "num", get: r => String(["companies", "contacts", "deals", "tasks"]
+    { h: "Records", cls: "num", get: r => String(["companies", "contacts", "tasks"]
         .reduce((s, k) => s + state.data[k].filter(x => tagsOf(x.tags).indexOf(r.tag) >= 0).length, 0)) },
     { h: "", cls: "act", get: r => `<span class="rowacts"><button class="btn xs" data-tagedit="${esc(r.tag)}">Edit</button></span>` }
   ], state.data.tags, { key: "tags", blankTitle: "No tags", blank: "Add one with + Tag." });

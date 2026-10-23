@@ -74,12 +74,12 @@ Still in the Apps Script editor:
 Paste the `/exec` URL into a browser tab. You should see:
 
 ```json
-{"ok":true,"service":"crm","version":2,"schema":"2026-10-23.1","builtJustNow":true,...}
+{"ok":true,"service":"crm","version":2,"schema":"2026-10-23.2","builtJustNow":true,...}
 ```
 
 Go back to the spreadsheet tab and reload it. Every tab is now there — Users,
 Sessions, Departments, Teams, Positions, Tags, Lists, Companies, Contacts,
-Deals, Tasks, Flows, FlowLog, TimeLog, Activity — with the starter org chart,
+Tasks, Flows, FlowLog, TimeLog, Messages, Activity — with the starter org chart,
 client tags, pipeline stages and one example routing flow.
 
 If you instead see an HTML error page, or `builtJustNow` never goes true, jump
@@ -135,7 +135,7 @@ recolour, add and delete until it is your actual org.
 **Admin ▸ Teams.** Each sits inside a department — CRO has CS, GD and SD out of
 the box. A department with no teams is fine.
 
-**Admin ▸ Positions.** Manager, TL, Next Inline, Member, Observer. Each has:
+**Admin ▸ Positions.** Manager, TL, Next Inline, Member. Each has:
 
 | | |
 |---|---|
@@ -176,15 +176,25 @@ routing. See the README for the detail.
 
 ---
 
-## 8. Two things to know about tasks
+## 8. How tasks behave
 
-**Tasks ignore tags.** A task is only ever visible to the person who raised it,
-its watchers, whoever is holding it, and anyone who has held it. If someone
-cannot see a task, the answer is always: hand it to them, or add them as a
-watcher. This is deliberate — it is the rule you asked for.
+**Tasks ignore the org chart.** A task is visible to the person who raised it,
+its observers, whoever holds it now — and to anyone who held it before, but
+only while it is still at a desk their own team staffs. Once the TL signs it
+off and it moves on, it leaves their list, and comes back if it is handed to
+them again. If someone cannot see a task, the answer is: hand it to them, or
+add them as an observer.
 
 **Forwarding reassigns.** Sending a task to the next desk hands it to a person
 holding that desk's posting, which is what puts it in front of them.
+
+**Every task has a chat**, in its drawer, readable by exactly those people.
+Saying something puts you on the task so you keep seeing replies. Enter sends,
+Shift+Enter is a new line.
+
+**Confirmations Sent** parks a task: it clears the deadline, and moving off it
+makes you set a new one. **Starting a timer** puts a task In Progress by
+itself — unless it is Done or parked, which are left alone.
 
 ---
 
@@ -246,7 +256,9 @@ Type a new password into the `password` cell of the `admin` row in the sheet,
 then sign in with it.
 
 **Someone cannot see a task.**
-That is the rule, not a fault. Hand it to them or add them as a watcher.
+That is the rule, not a fault. Hand it to them, or add them as an observer.
+If they used to see it and now do not, it has moved past their team's desk —
+that is deliberate.
 
 **"This flow does not go from X to Y."**
 The map has no route between those steps. Open the flow and tick Y under X's
